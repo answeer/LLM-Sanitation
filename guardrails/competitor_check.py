@@ -1,6 +1,9 @@
-from llm_guard.input_scanners import BanCompetitors
+# Import Guard and Validator
+from guardrails import Guard
+from guardrails.hub import CompetitorCheck
 
-# Define a list of competitors
+
+# Generate competitors list
 competitors_list = [
     "Acorns",
     "Citigroup",
@@ -19,11 +22,9 @@ competitors_list = [
     "ZacksTrade",
     "Zacks Trade",
 ]
-# Initialize the scanner
-scanner = BanCompetitors(competitors=competitors_list, redact=False, threshold=0.5)
 
-# Prepare a test prompt
-prompt = """
+# Define some text to test the validator
+text = """\
 In the dynamic realm of finance, several prominent entities have emerged as key players,\
 leaving an indelible mark on the industry. Acorns, a fintech innovator, has revolutionized saving \
 and investing with its user-friendly app. Citigroup, a multinational investment bank, stands as a \
@@ -38,10 +39,16 @@ Santander have redefined the financial landscape, shaping the way we save, inves
 money on a global scale.\
 """
 
-# Scan the prompt using the scanner
-sanitized_prompt, is_valid, risk_score = scanner.scan(prompt)
+# Create the Guard with the CompetitorCheck Validator
+guard = Guard.from_string(
+    validators=[CompetitorCheck(competitors=competitors_list, on_fail="fix")],
+    description="testmeout",
+)
 
-# Print the results
-print("Sanitized Prompt:", sanitized_prompt)
-print("Is Valid:", is_valid)
-print("Risk Score:", risk_score)
+# Test with a given text
+output = guard.parse(
+    llm_output=text,
+    metadata={},
+)
+
+print(output)
