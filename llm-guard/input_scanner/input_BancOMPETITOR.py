@@ -20,7 +20,7 @@ competitors_list = [
     "Zacks Trade",
 ]
 # Initialize the scanner
-scanner = BanCompetitors(competitors=competitors_list, redact=False, threshold=0.5)
+scanner = BanCompetitors(competitors=competitors_list, redact=True, threshold=0.5)
 
 # Prepare a test prompt
 prompt = """
