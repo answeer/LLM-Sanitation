@@ -20,13 +20,13 @@ competitors_list = [
     "Zacks Trade",
 ]
 # Initialize the scanner
-scanner = BanCompetitors(competitors=competitors_list, redact=True, threshold=0.5)
+scanner = BanCompetitors(competitors=competitors_list, redact=True, threshold=0.3)
 
 # Prepare a test prompt
 prompt = """
 In the dynamic realm of finance, several prominent entities have emerged as key players,\
-leaving an indelible mark on the industry. Acorns, a fintech innovator, has revolutionized saving \
-and investing with its user-friendly app. Citigroup, a multinational investment bank, stands as a \
+leaving an indelible mark on the industry. acorns, a fintech innovator, has revolutionized saving \
+and investing with its user-friendly app. citigroup, a multinational investment bank, stands as a \
 pillar of financial expertise, offering a wide array of services to clients worldwide. HSBC, with \
 its extensive global network, has become a powerhouse in the banking sector, catering to the needs \
 of millions across different countries. JP Morgan, a venerable institution with a rich history, has \
