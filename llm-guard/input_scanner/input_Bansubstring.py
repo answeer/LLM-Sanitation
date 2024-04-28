@@ -36,4 +36,4 @@ sanitized_prompt, is_valid, risk_score = scanner.scan(prompt)
 # Print the results
 print("Sanitized Prompt:", sanitized_prompt)
 print("Is Valid:", is_valid)
-print("Risk Score:", risk_score)
+print("Risk Score:", risk_score) 
