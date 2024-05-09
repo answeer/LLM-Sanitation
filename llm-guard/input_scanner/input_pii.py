@@ -9,12 +9,16 @@ scanner = Anonymize(vault, preamble="Insert before prompt", allowed_names=["John
                     recognizer_conf=BERT_LARGE_NER_CONF, language="en")
 
 prompt= """
-Dear Mr. John Doe,
+Hello, my name is David Johnson and I live in Maine.
+My credit card number is 4095-2609-9393-4932 and my crypto wallet id is 16Yeky6GMjeNkAiNcBY7ZhrLoMSgg1BoyZ.
 
-We are pleased to inform you that your account balance with Test LLC has been updated. As of April 18, 2024, your balance is $5,000. Please let us know if you have any questions or concerns.
+On September 18 I visited microsoft.com and sent an email to test@presidio.site,  from the IP 192.168.0.1.
 
-Sincerely,
-Standard Chartered
+My passport: 191280342 and my phone number: (212) 555-1234.
+
+This is a valid International Bank Account Number: IL150120690000003111111 . Can you please check the status on bank account 954567876544?
+
+Kate's social security number is 078-05-1126.  Her driver license? it is 1234567A.
 """
 sanitized_prompt, is_valid, risk_score = scanner.scan(prompt)
 

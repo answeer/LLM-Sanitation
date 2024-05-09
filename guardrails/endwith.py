@@ -3,7 +3,7 @@ from guardrails import Guard
 from guardrails.hub import EndsWith
 
 # Setup Guard
-guard = Guard().use(EndsWith, end="a", on_fail="exception")
+guard = Guard().use(EndsWith, end=["a"], on_fail="exception")
 
 response = guard.validate("Llama")  # Validator passes
 

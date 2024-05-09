@@ -14,10 +14,21 @@ guard = gd.Guard.from_string(
 )
 
 # Parse the text
-text = "My email address is demo@lol.com, and my phone number is 1234567890"
+text = """
+Hello, my name is David Johnson and I live in Maine.
+My credit card number is 4095-2609-9393-4932 and my crypto wallet id is 16Yeky6GMjeNkAiNcBY7ZhrLoMSgg1BoyZ.
+
+On September 18 I visited microsoft.com and sent an email to test@presidio.site,  from the IP 192.168.0.1.
+
+My passport: 191280342 and my phone number: (212) 555-1234.
+
+This is a valid International Bank Account Number: IL150120690000003111111 . Can you please check the status on bank account 954567876544?
+
+Kate's social security number is 078-05-1126.  Her driver license? it is 1234567A.
+"""
 output = guard.parse(
     llm_output=text,
 )
 
 # Print the output
-print(output)
+print(output)   
