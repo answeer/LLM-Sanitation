@@ -1,6 +1,7 @@
 import csv
 import yaml
 import os
+import re
 from llm_guard import scan_prompt, scan_output
 from llm_guard.input_scanners import (
     Anonymize,
@@ -38,6 +39,13 @@ class LLMGuard:
         self.load_config()
         self.scan_input()
         self.scan_output()
+    
+    def get_pii(self,prompt):
+
+        extracted_content = re.findall(r'\[REDACTED_([^]]+)\]', prompt)
+        extracted_content_without_suffix = [re.sub(r'_[0-9]+$', '', item) for item in extracted_content]
+        unique_content = list(set(extracted_content_without_suffix))
+        return unique_content
 
     def load_config(self):
         with open(self.config_file, 'r', encoding='utf-8') as config_file:
@@ -66,7 +74,7 @@ class LLMGuard:
 
         for col in input_columns:
             output_file = os.path.join(self.output_path,f"{col}_output.csv")
-
+            
             with open(output_file, 'w', newline='', encoding='utf-8') as file:
                 writer = csv.DictWriter(file, fieldnames=reader.fieldnames + new_columns)
                 writer.writeheader()
@@ -74,11 +82,12 @@ class LLMGuard:
                 for row in rows:
                     input_prompt = row[col]
                     sanitized_prompt, results_valid, _ = scan_prompt(input_scanners, input_prompt)
-                    
                     for scanner in input_scanners:
                         scanner_name = scanner.__class__.__name__
                         row[scanner_name] = results_valid.get(scanner_name, None)
-                    
+                    if results_valid['Anonymize'] == False:
+                        anonymize_results = self.get_pii(sanitized_prompt)
+                        row["Anonymize"] = anonymize_results
                     row['sanitized_prompt'] = sanitized_prompt
                     writer.writerow(row)
 
