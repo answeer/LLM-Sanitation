@@ -1,35 +1,170 @@
+from pathlib import Path
+import sys
 import os
-import nbformat
+from pprint import pprint
+script_path = os.path.join(Path(sys.argv[0]).parent, "agent")
+source_path = str(Path(script_path))
+print("Source path ", source_path)
+sys.path.insert(0, source_path)
 
-def convert_to_notebook(py_file, notebook_folder):
-    with open(py_file, 'r') as f:
-        py_code = f.read()
+current_file_path = os.path.abspath(__file__)
+print("current_file_path  ", current_file_path)
 
-    nb = nbformat.v4.new_notebook()
-    nb['cells'] = [nbformat.v4.new_code_cell(py_code)]
 
-    notebook_name = os.path.splitext(os.path.basename(py_file))[0] + ".ipynb"
-    notebook_path = os.path.join(notebook_folder, notebook_name)
+from typing import Any, Generator, Optional, Sequence, Union
 
-    with open(notebook_path, 'w') as f:
-        nbformat.write(nb, f)
+import mlflow
+from databricks_langchain import (
+    ChatDatabricks,
+    VectorSearchRetrieverTool,
+)
+from langchain_core.language_models import LanguageModelLike
+from langchain_core.runnables import RunnableConfig, RunnableLambda
+from langchain_core.tools import BaseTool
+from langgraph.graph import END, StateGraph
+from langgraph.graph.state import CompiledStateGraph
+from langgraph.prebuilt.tool_node import ToolNode
+from mlflow.langchain.chat_agent_langgraph import ChatAgentState, ChatAgentToolNode
+from mlflow.pyfunc import ChatAgent
+from mlflow.types.agent import (
+    ChatAgentChunk,
+    ChatAgentResponse,
+    ChatAgentMessage,
+    ChatContext
+)
 
-def batch_convert_to_notebook(python_files_folder, notebook_folder):
-    # 创建存放Jupyter Notebook的目录
-    if not os.path.exists(notebook_folder):
-        os.makedirs(notebook_folder)
+from mlflow.types.chat import ChatCompletionChunk,ChatMessage, ChatCompletionResponse
+try:
+    from prompt_template import get_system_prompt
+except:
+    from RAGaaS.rag_chat.agent.prompt_template import get_system_prompt
+try:
+    from config import llm_endpoint_name, vs_index_name, business_prompt, description, fallback_message, mlflow_experiment_nm, experiment_dir
+except:
+    from RAGaaS.rag_chat.agent.config import llm_endpoint_name, vs_index_name, business_prompt, description, fallback_message, mlflow_experiment_nm, experiment_dir
 
-    # 遍历文件夹中的所有Python文件
-    for file_name in os.listdir(python_files_folder):
-        if file_name.endswith(".py"):
-            py_file = os.path.join(python_files_folder, file_name)
-            convert_to_notebook(py_file, notebook_folder)
 
-# 指定存放Python文件的文件夹路径
-python_files_folder = "guardrails"
+LLM_ENDPOINT_NAME = llm_endpoint_name
+llm = ChatDatabricks(endpoint=LLM_ENDPOINT_NAME)
 
-# 指定存放Jupyter Notebook的文件夹路径
-notebook_folder = "notebook/guardrails"
 
-# 批量转换Python文件为Jupyter Notebook
-batch_convert_to_notebook(python_files_folder, notebook_folder)
+def get_tools():
+    tools = []
+    vector_search_tools = [
+        VectorSearchRetrieverTool(
+            index_name=vs_index_name,
+        )
+    ]
+    tools.extend(vector_search_tools)
+
+    return tools
+
+
+def create_tool_calling_agent(
+    model: LanguageModelLike,
+    tools: Union[ToolNode, Sequence[BaseTool]],
+    system_prompt: Optional[str] = None,
+):
+
+    tools = get_tools()
+    model = model.bind_tools(tools)
+
+    # Define the function that determines which node to go to
+    def should_continue(state: ChatAgentState):
+        messages = state["messages"]
+        last_message = messages[-1]
+        # If there are function calls, continue. else, end
+        if last_message.get("tool_calls"):
+            return "continue"
+        else:
+            return "end"
+
+    if system_prompt:
+        preprocessor = RunnableLambda(
+            lambda state: [{"role": "system", "content": system_prompt}]
+            + state["messages"]
+        )
+    else:
+        preprocessor = RunnableLambda(lambda state: state["messages"])
+
+    def call_model(
+        state: ChatAgentState,
+        config: RunnableConfig,
+    ):
+        response = model_runnable.invoke(state, config)
+        return {"messages": [response]}
+
+    model_runnable = preprocessor | model
+    workflow = StateGraph(ChatAgentState)
+    workflow.add_node("agent", RunnableLambda(call_model))
+    workflow.add_node("tools", ChatAgentToolNode(tools))
+    workflow.set_entry_point("agent")
+    workflow.add_conditional_edges(
+        "agent",
+        should_continue,
+        {
+            "continue": "tools",
+            "end": END,
+        },
+    )
+    workflow.add_edge("tools", "agent")
+
+    return workflow.compile()
+
+
+class LangGraphChatAgent(ChatAgent):
+    def __init__(self, agent: CompiledStateGraph):
+        self.agent = agent
+
+         # Create a new experiment with a unique name
+        experiment_name = os.path.join(
+            experiment_dir, mlflow_experiment_nm
+        )
+        print("experiment_name ", experiment_name)
+        # Create a new MLflow experiment for chat traces
+        mlflow.set_experiment(experiment_name)
+
+    def predict(
+        self,
+        messages: list[ChatMessage],
+        context: Optional[ChatContext] = None,
+        custom_inputs: Optional[dict[str, Any]] = None,
+    ) -> ChatCompletionResponse:
+        request = {"messages": self._convert_messages_to_dict(messages)}
+
+        messages = []
+        for event in self.agent.stream(request, stream_mode="updates"):
+            for node_data in event.values():
+                messages.extend(
+                    ChatMessage(**msg) for msg in node_data.get("messages", [])
+                )
+        return ChatCompletionResponse(messages=messages)
+
+    def predict_stream(
+        self,
+        messages: list[ChatMessage],
+        context: Optional[ChatContext] = None,
+        custom_inputs: Optional[dict[str, Any]] = None,
+    ) -> Generator[ChatCompletionChunk, None, None]:
+        request = {"messages": self._convert_messages_to_dict(messages)}
+        for event in self.agent.stream(request, stream_mode="updates"):
+            for node_data in event.values():
+                yield from (
+                    ChatCompletionChunk(**{"delta": msg}) for msg in node_data["messages"]
+                )
+
+system_prompt = get_system_prompt(business_prompt, fallback_message, description)
+mlflow.langchain.autolog()
+agent = create_tool_calling_agent(llm, [], system_prompt)
+AGENT = LangGraphChatAgent(agent)
+mlflow.models.set_model(AGENT)
+message = {
+                  "messages": [
+                    {
+                      "role": "user",
+                      "content": "How does RAI Governance apply to the use of data analytics in audits?"
+                    }
+                  ]
+                }
+print("--------------")
+print(AGENT.predict(message))
