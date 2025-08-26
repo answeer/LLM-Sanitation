@@ -168,3 +168,39 @@ message = {
                 }
 print("--------------")
 print(AGENT.predict(message))
+
+
+{
+    "id": "chatcmpl-C8jQ5l57Ctq0GyAnZdgnXggtNdqiP",
+    "created": 1756197253,
+    "model": "gpt-4o-2024-11-20",
+    "object": "chat.completion",
+    "system_fingerprint": null,
+    "choices": [
+        {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+                "content": "RAI Governance (Responsible AI Governancensures rocesses while adhering to regulatory and ethical standard applied aand reliability of audit findings.",
+                "role": "assistant",
+                "tool_calls": null,
+                "function_call": null
+            }
+        }
+    ],
+    "usage": {
+        "completion_tokens": 668,
+        "prompt_tokens": 22,
+        "total_tokens": 690,
+        "completion_tokens_details": {
+            "accepted_prediction_tokens": 0,
+            "audio_tokens": 0,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": 0
+        },
+        "prompt_tokens_details": {
+            "audio_tokens": 0,
+            "cached_tokens": 0
+        }
+    }
+}
