@@ -1,6 +1,8 @@
 from pathlib import Path
 import sys
 import os
+import time
+import uuid
 from pprint import pprint
 script_path = os.path.join(Path(sys.argv[0]).parent, "agent")
 source_path = str(Path(script_path))
@@ -26,14 +28,14 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt.tool_node import ToolNode
 from mlflow.langchain.chat_agent_langgraph import ChatAgentState, ChatAgentToolNode
 from mlflow.pyfunc import ChatAgent
-from mlflow.types.agent import (
-    ChatAgentChunk,
-    ChatAgentResponse,
-    ChatAgentMessage,
-    ChatContext
+from mlflow.types.chat import (
+    ChatCompletionChunk,
+    ChatCompletionResponse,
+    ChatMessage,
+    Choice,
+    Usage
 )
 
-from mlflow.types.chat import ChatCompletionChunk,ChatMessage, ChatCompletionResponse
 try:
     from prompt_template import get_system_prompt
 except:
@@ -127,10 +129,10 @@ class LangGraphChatAgent(ChatAgent):
     def predict(
         self,
         messages: list[ChatMessage],
-        context: Optional[ChatContext] = None,
+        context: Optional[Any] = None,
         custom_inputs: Optional[dict[str, Any]] = None,
     ) -> ChatCompletionResponse:
-        request = {"messages": self._convert_messages_to_dict(messages)}
+        request = {"messages": [msg.to_dict() for msg in messages]}
 
         messages = []
         for event in self.agent.stream(request, stream_mode="updates"):
@@ -138,20 +140,54 @@ class LangGraphChatAgent(ChatAgent):
                 messages.extend(
                     ChatMessage(**msg) for msg in node_data.get("messages", [])
                 )
-        return ChatCompletionResponse(messages=messages)
+        
+        # Extract the assistant's response
+        assistant_message = next((msg for msg in messages if msg.role == "assistant"), None)
+        
+        # Create the response in the required format
+        return ChatCompletionResponse(
+            id=f"chatcmpl-{uuid.uuid4().hex}",
+            created=int(time.time()),
+            model=LLM_ENDPOINT_NAME,
+            object="chat.completion",
+            choices=[
+                Choice(
+                    index=0,
+                    message=assistant_message,
+                    finish_reason="stop"
+                )
+            ],
+            usage=Usage(
+                prompt_tokens=0,  # You'll need to calculate these
+                completion_tokens=0,  # You'll need to calculate these
+                total_tokens=0  # You'll need to calculate these
+            )
+        )
 
     def predict_stream(
         self,
         messages: list[ChatMessage],
-        context: Optional[ChatContext] = None,
+        context: Optional[Any] = None,
         custom_inputs: Optional[dict[str, Any]] = None,
     ) -> Generator[ChatCompletionChunk, None, None]:
-        request = {"messages": self._convert_messages_to_dict(messages)}
+        request = {"messages": [msg.to_dict() for msg in messages]}
+        
         for event in self.agent.stream(request, stream_mode="updates"):
             for node_data in event.values():
-                yield from (
-                    ChatCompletionChunk(**{"delta": msg}) for msg in node_data["messages"]
-                )
+                for msg in node_data.get("messages", []):
+                    yield ChatCompletionChunk(
+                        id=f"chatcmpl-{uuid.uuid4().hex}",
+                        created=int(time.time()),
+                        model=LLM_ENDPOINT_NAME,
+                        object="chat.completion.chunk",
+                        choices=[
+                            {
+                                "index": 0,
+                                "delta": ChatMessage(**msg),
+                                "finish_reason": None
+                            }
+                        ]
+                    )
 
 system_prompt = get_system_prompt(business_prompt, fallback_message, description)
 mlflow.langchain.autolog()
@@ -159,48 +195,12 @@ agent = create_tool_calling_agent(llm, [], system_prompt)
 AGENT = LangGraphChatAgent(agent)
 mlflow.models.set_model(AGENT)
 message = {
-                  "messages": [
-                    {
-                      "role": "user",
-                      "content": "How does RAI Governance apply to the use of data analytics in audits?"
-                    }
-                  ]
-                }
-print("--------------")
-print(AGENT.predict(message))
-
-
-{
-    "id": "chatcmpl-C8jQ5l57Ctq0GyAnZdgnXggtNdqiP",
-    "created": 1756197253,
-    "model": "gpt-4o-2024-11-20",
-    "object": "chat.completion",
-    "system_fingerprint": null,
-    "choices": [
+    "messages": [
         {
-            "finish_reason": "stop",
-            "index": 0,
-            "message": {
-                "content": "RAI Governance (Responsible AI Governancensures rocesses while adhering to regulatory and ethical standard applied aand reliability of audit findings.",
-                "role": "assistant",
-                "tool_calls": null,
-                "function_call": null
-            }
+            "role": "user",
+            "content": "How does RAI Governance apply to the use of data analytics in audits?"
         }
-    ],
-    "usage": {
-        "completion_tokens": 668,
-        "prompt_tokens": 22,
-        "total_tokens": 690,
-        "completion_tokens_details": {
-            "accepted_prediction_tokens": 0,
-            "audio_tokens": 0,
-            "reasoning_tokens": 0,
-            "rejected_prediction_tokens": 0
-        },
-        "prompt_tokens_details": {
-            "audio_tokens": 0,
-            "cached_tokens": 0
-        }
-    }
+    ]
 }
+print("--------------")
+print(AGENT.predict([ChatMessage(**msg) for msg in message["messages"]]))
