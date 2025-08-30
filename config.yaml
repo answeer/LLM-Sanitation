@@ -1,6 +1,62 @@
-(Bulletin {month:"March", year:2025})
-    └── [:HAS_CHANGE]
-        └── (Change {category:"Fraud", title:"Fraud Liability Shift"})
-              ├── [:ASSIGNED_TO] -> (Team {name:"Fraud Management"})
-              ├── [:TRACKED_BY]  -> (Task {status:"Pending"})
-              └── [:SIMILAR_TO]  -> (Change from Feb 2025 bulletin)
+Bank Stakeholder Teams & Responsibilities
+1. Fraud & Risk Management Team
+Monitors fraud transactions & fraud-to-sales ratio.
+Implements fraud detection tools (e.g., 3DS, ML fraud engines).
+Manages Visa VFMP, Mastercard MER, Amex fraud programs.
+Responds to fraud-related disputes and chargebacks.
+Ensures compliance with fraud liability shift rules (e.g., EMV, contactless).
+2. Dispute & Chargeback Operations Team
+Handles chargeback intake, review, and resolution.
+Ensures compliance with new reason codes and timeframes.
+Collects and submits supporting documentation.
+Coordinates with merchants/acquirers on representments.
+3. Compliance & Regulatory Affairs
+Tracks card network bulletins, central bank/RBI/FCA/OFAC guidelines.
+Ensures bank policies align with Visa/MC/Amex rules.
+Manages AML/CFT requirements.
+Oversees consumer protection law compliance.
+Liaises with regulators and card networks during audits.
+4. IT & Technology / Core Banking Systems
+Updates core banking and card management systems.
+Implements API integrations for Visa/MC/Amex updates.
+Manages BIN tables, authorization/settlement flows.
+Ensures systems meet ISO 20022 / PCI DSS standards.
+Supports automation of compliance reporting.
+5. Payments Operations / Transaction Processing
+Oversees daily settlement, clearing, and reconciliation.
+Ensures new processing rules are applied.
+Monitors cut-off times and transaction routing.
+Implements changes in multi-currency & cross-border flows.
+6. Interchange & Fees / Finance Team
+Reviews and implements interchange & assessment fee changes.
+Updates pricing models and financial forecasts.
+Communicates fee impacts to merchants or internal teams.
+Works with Finance/Accounting on billing adjustments.
+7. Merchant Acquiring / Partnerships
+Manages acquiring business, MCC classification, and merchant onboarding.
+Implements restrictions for high-risk merchants (gambling, crypto, adult, etc.).
+Communicates new rules to merchants & PSPs.
+Ensures disclosure and transparency requirements (e.g., subscriptions, refunds).
+8. Card Product & Business Team
+Owns card portfolio (credit, debit, prepaid, corporate).
+Adopts new Visa/MC/Amex services (e.g., installment payments, BNPL, rewards).
+Ensures alignment of product T&Cs with network rules.
+Communicates changes to marketing & customer service teams.
+9. Information Security / Cybersecurity
+Ensures compliance with PCI DSS, tokenization, encryption mandates.
+Implements new security controls from bulletins.
+Conducts risk assessments and penetration testing.
+Works with IT on fraud-prevention tools.
+10. Legal Department
+Interprets regulatory & card network rule changes.
+Advises business and compliance teams on contractual obligations.
+Manages legal risks with regulators and merchants.
+Ensures cross-border compliance with sanctions & AML rules.
+11. Customer Service / Contact Center
+Updates scripts for new dispute processes or billing transparency.
+Trains staff on subscription cancellation & refund handling rules.
+Provides guidance to customers affected by new compliance changes.
+12. Audit & Risk Oversight
+Performs internal audits on compliance with Visa/MC/Amex rules.
+Tracks remediation of non-compliance issues.
+Reports compliance status to senior management/board.
