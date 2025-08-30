@@ -1,60 +1,6 @@
-ban_topics:
-  - politics
-  - religion
-  - profanity
-  - adult
-  - illigal
-  - terrorism
-  - violence
-
-ban_competitors:
-  - OpenAI
-  - facebook
-  - Google
-  
-code_languages:
-  - Python
-  - PHP
-  - C++
-  - Go
-  - Java
-  - JavaScript
-  - Visual Basic .NET
-
-valid_languages:
-  - en
-
-default_entity_types:
-  - CREDIT_CARD
-  - CRYPTO
-  - DATE_TIME
-  - EMAIL_ADDRESS
-  - IBAN_CODE
-  - IP_ADDRESS
-  - NRP
-  - LOCATION
-  - PERSON
-  - PHONE_NUMBER
-  - MEDICAL_LICENSE
-  - URL
-  - US_SSN
-  - US_ITIN
-  - US_BANK_NUMBER
-  - US_PASSPORT
-  - CREDIT_CARD_RE
-  - UUID
-  - EMAIL_ADDRESS_RE
-  - US_SSN_RE
-  - IN_PAN
-  - IN_AADHAAR
-  - IN_VEHICLE_REGISTRATION
-
-input_columns:
- - content
- - question
- - answer
-
-output_columns:
- - content
- - question
- - answer
+(Bulletin {month:"March", year:2025})
+    └── [:HAS_CHANGE]
+        └── (Change {category:"Fraud", title:"Fraud Liability Shift"})
+              ├── [:ASSIGNED_TO] -> (Team {name:"Fraud Management"})
+              ├── [:TRACKED_BY]  -> (Task {status:"Pending"})
+              └── [:SIMILAR_TO]  -> (Change from Feb 2025 bulletin)
