@@ -1,139 +1,113 @@
-import csv
-import yaml
+from llm_chat import test_llm # 导入 LLM 查询模块
+from dotenv import load_dotenv
 import os
-import re
-from llm_guard import scan_prompt, scan_output
-from llm_guard.input_scanners import (
-    Anonymize,
-    BanCompetitors,
-    BanTopics,
-    Code,
-    Gibberish,
-    Language,
-    PromptInjection,
-    Toxicity,
-    InvisibleText,
-    Sentiment,
-    TokenLimit,
-    Secrets,
-)
-from llm_guard.output_scanners import (
-    Bias,
-    LanguageSame,
-    NoRefusal,
-    FactualConsistency,
-    Relevance,
-    URLReachability,
-)
-from llm_guard.vault import Vault
 
-class LLMGuard:
-    def __init__(self, input_file, output_path, config_file):
-        self.input_file = input_file
-        self.output_path = output_path
-        self.config_file = config_file
-        self.vault = Vault()
-        os.makedirs(self.output_path,exist_ok=True)
+class ComplianceBulletinAgent:
+    def __init__(self, updated_sections, model_name, endpoint, key):
+        """
+        初始化代理，接受提取好的更新内容
+        updated_sections: dict, 包含 "new"、"advanced"、"removed" 三个类别的变化
+        model_name: LLM 模型名称
+        endpoint: LLM 端点
+        key: LLM API 密钥
+        """
+        # 将所有变化合并为一个列表
+        self.all_changes = []
+        for category, changes in updated_sections.items():
+            for change in changes:
+                self.all_changes.append(f"{category.capitalize()}: {change}")
 
-    def run(self):
-        self.load_config()
-        self.scan_input()
-        self.scan_output()
-    
-    def get_pii(self,prompt):
+        self.model_name = model_name
+        self.endpoint = endpoint
+        self.key = key
 
-        extracted_content = re.findall(r'\[REDACTED_([^]]+)\]', prompt)
-        extracted_content_without_suffix = [re.sub(r'_[0-9]+$', '', item) for item in extracted_content]
-        unique_content = list(set(extracted_content_without_suffix))
-        return unique_content
+    def identify_responsible_team_with_llm(self, changes):
+        """
+        使用LLM来识别负责团队
+        """
+        # 将所有变化描述拼接成一个字符串传给 LLM
+        prompt = f"Given the following changes:\n{changes}\nIdentify the responsible team from the following teams:\n"
+        prompt += "1. Fraud & Risk Management Team\n"
+        prompt += "2. Dispute & Chargeback Operations Team\n"
+        prompt += "3. Compliance & Regulatory Affairs\n"
+        prompt += "4. IT & Technology / Core Banking Systems\n"
+        prompt += "5. Payments Operations / Transaction Processing\n"
+        prompt += "6. Interchange & Fees / Finance Team\n"
+        prompt += "7. Merchant Acquiring / Partnerships\n"
+        prompt += "8. Card Product & Business Team\n"
+        prompt += "9. Information Security / Cybersecurity\n"
+        prompt += "10. Legal Department\n"
+        prompt += "11. Customer Service / Contact Center\n"
+        prompt += "12. Audit & Risk Oversight\n"
+        prompt += "Please return only the name of the responsible team."
 
-    def load_config(self):
-        with open(self.config_file, 'r', encoding='utf-8') as config_file:
-            self.config = yaml.safe_load(config_file)
+        # 调用 LLM 查询
+        team = test_llm(self.model_name, prompt, self.endpoint, self.key)
+        return team.strip() if team else "Unknown Team"
 
-    def scan_input(self):
-        input_columns = self.config.get('input_columns', [])
-        input_scanners = [
-                Anonymize(self.vault),
-                BanTopics(topics=self.config['ban_topics']),
-                BanCompetitors(competitors=self.config['ban_competitors']),
-                Toxicity(),
-                Code(languages=self.config['code_languages']),
-                Gibberish(),
-                Language(valid_languages=self.config['valid_languages']),
-                PromptInjection(),
-                InvisibleText(),
-                Sentiment(),
-                TokenLimit(),
-                Secrets(),
-            ]
-        with open(self.input_file, 'r', encoding='utf-8') as file:
-                reader = csv.DictReader(file)
-                rows = list(reader)
-        new_columns = [scanner.__class__.__name__ for scanner in input_scanners] + ['sanitized_prompt']
+    def create_task_with_llm(self, changes, responsible_team):
+        """
+        使用LLM生成任务，并包含高层任务描述、Definition of Ready 和 Definition of Done
+        """
+        prompt = f"Create a task for the following changes: '{changes}'. The task should include: \n"
+        prompt += "- High-level task description\n"
+        prompt += "- Definition of Ready\n"
+        prompt += "- Definition of Done\n"
+        prompt += f"Assign this task to the '{responsible_team}' team."
 
-        for col in input_columns:
-            output_file = os.path.join(self.output_path,f"{col}_output.csv")
-            
-            with open(output_file, 'w', newline='', encoding='utf-8') as file:
-                writer = csv.DictWriter(file, fieldnames=reader.fieldnames + new_columns)
-                writer.writeheader()
+        # 调用 LLM 查询生成任务
+        task = test_llm(self.model_name, prompt, self.endpoint, self.key)
+        return task.strip() if task else "Failed to generate task"
 
-                for row in rows:
-                    input_prompt = row[col]
-                    sanitized_prompt, results_valid, _ = scan_prompt(input_scanners, input_prompt)
-                    for scanner in input_scanners:
-                        scanner_name = scanner.__class__.__name__
-                        row[scanner_name] = results_valid.get(scanner_name, None)
-                    if results_valid['Anonymize'] == False:
-                        anonymize_results = self.get_pii(sanitized_prompt)
-                        row["Anonymize"] = anonymize_results
-                    row['sanitized_prompt'] = sanitized_prompt
-                    writer.writerow(row)
+    def process_bulletin(self):
+        """
+        处理更新内容，生成任务并识别团队
+        """
+        tasks = []
+        
+        # 合并所有变化为一个字符串
+        changes_str = "\n".join(self.all_changes)
+        
+        # 识别负责团队
+        team = self.identify_responsible_team_with_llm(changes_str)
 
-    def scan_output(self):
-        output_columns = self.config.get('output_columns', [])
-        if len(output_columns) < 2:
-            print("output scanner need at least tow contents")
-            return
+        # 生成任务
+        task = self.create_task_with_llm(changes_str, team)
+        tasks.append({
+            'changes': changes_str,
+            'task': task,
+            'responsible_team': team # 记录责任团队
+        })
 
-        output_scanners = [
-            Bias(),
-            LanguageSame(),
-            NoRefusal(),
-            FactualConsistency(),
-            Relevance(),
-            URLReachability(),
-        ]
+        # 输出结果
+        print("Responsible Team:", team)
+        print("\nGenerated Task:")
+        for task in tasks:
+            print(f"Changes: {task['changes']}")
+            print(f"Task: {task['task']}")
 
-        with open(self.input_file, 'r', encoding='utf-8') as file:
-            reader = csv.DictReader(file)
-            rows = list(reader)
+        return tasks
 
-        for i in range(len(output_columns) - 1):
-            for j in range(i + 1, len(output_columns)):
-                input_scanners = output_scanners[:]
 
-                output_file = os.path.join(self.output_path,f"{output_columns[i]}_{output_columns[j]}_output.csv")
+# 假设更新部分已经由同事提取好了
+updated_sections = {
+    "new": [
+        "Contactless biometric rule, reduced dispute response time."
+    ],
+    "advanced": [
+        "Subscription cancellation requirement from advisory → mandatory."
+    ],
+    "removed": [
+        "Reason code 4530 is no longer valid."
+    ]
+}
 
-                with open(output_file, 'w', newline='', encoding='utf-8') as file:
-                    writer = csv.DictWriter(file, fieldnames=reader.fieldnames + [scanner.__class__.__name__ for scanner in input_scanners] + ['sanitized_prompt'])
-                    writer.writeheader()
+# LLM 配置信息
+model_name = "claude-3-7-sonnet"
+endpoint = os.getenv("ai_gateway")
+key = os.getenv("hackathon_key")
 
-                    for row in rows:
-                        input_prompt = row[output_columns[i]]
-                        model_output = row[output_columns[j]]
-                        sanitized_prompt, results_valid, _ = scan_output(input_scanners, input_prompt, model_output)
-                        
-                        for scanner in input_scanners:
-                            scanner_name = scanner.__class__.__name__
-                            row[scanner_name] = results_valid.get(scanner_name, None)
-                        
-                        row['sanitized_prompt'] = sanitized_prompt
-                        writer.writerow(row)
+# 初始化代理并处理
+agent = ComplianceBulletinAgent(updated_sections, model_name, endpoint, key)
+tasks = agent.process_bulletin()
 
-# Usage
-if __name__ == "__main__":
-    llm_guard = LLMGuard(input_file='input.csv', output_path='output', config_file='config.yaml')
-    llm_guard.run()
-    print("Processed results saved to separate CSV files based on columns specified in the config.")
