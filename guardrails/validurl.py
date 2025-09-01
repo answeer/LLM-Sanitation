@@ -1,20 +1,38 @@
 import os
+import re
 import json
+from typing import List, Dict, Any
+from dataclasses import asdict
+
 from PyPDF2 import PdfReader
 from dotenv import load_dotenv
+
+# ---- Your existing LLM shim -------------------------------------------------
+# Expecting a local helper that calls your preferred LLM (e.g., OpenAI, Azure, etc.)
 from llm import call_llm
-from langgraph.graph import StateGraph
+
+# ---- LangChain imports ------------------------------------------------------
+from langchain.agents import initialize_agent, AgentType, Tool
+try:
+    # Newer LC split packages
+    from langchain_core.language_models import LLM
+except Exception:  # pragma: no cover
+    # Fallback for older LC
+    from langchain.llms.base import LLM  # type: ignore
+
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any
 
-# Load environment variables if needed
+# ----------------------------------------------------------------------------
+# Config
+# ----------------------------------------------------------------------------
 load_dotenv()
-
 MASTER_CATEGORIES_PATH = os.path.join("metadata", "master_catagories.txt")
 DOCUMENTS_FOLDER = "document"
 OUTPUT_JSON = "visa_compliance_langgraph.json"
 
-# Pydantic model for a change item
+# ----------------------------------------------------------------------------
+# Data models (Pydantic)
+# ----------------------------------------------------------------------------
 class ChangeItem(BaseModel):
     description: str
     impact: str
@@ -24,7 +42,6 @@ class ChangeItem(BaseModel):
     countries_impacted: List[str] = Field(default_factory=list)
     mapped_category: str = Field(default="Uncategorized")
 
-# Pydantic model for a document summary
 class DocumentSummary(BaseModel):
     filename: str
     article_id: str
@@ -34,35 +51,40 @@ class DocumentSummary(BaseModel):
     summary_of_change: str
     list_of_changes: List[ChangeItem]
 
-# Pydantic model for the agent state
-class AgentState(BaseModel):
-    summaries: List[DocumentSummary] = Field(default_factory=list)
+# ----------------------------------------------------------------------------
+# Helpers
+# ----------------------------------------------------------------------------
 
-# Read master categories
-def read_master_categories(path):
-    categories = {}
+def read_master_categories(path: str) -> Dict[str, List[str]]:
+    """Read master categories from a simple enumerated text file."""
+    categories: Dict[str, List[str]] = {}
+    if not os.path.exists(path):
+        return categories
     with open(path, "r", encoding="utf-8") as f:
         lines = f.readlines()
     current_cat = None
     for line in lines:
         line = line.strip()
-        if line and line[0].isdigit() and line[1] == ".":
+        if not line:
+            continue
+        if len(line) > 2 and line[0].isdigit() and line[1] == ".":
+            # e.g. "1. Category Name"
             current_cat = line[3:]
             categories[current_cat] = []
-        elif current_cat and line:
+        elif current_cat:
             categories[current_cat].append(line)
     return categories
 
-# Extract text from PDF
-def extract_pdf_text(pdf_path):
+
+def extract_pdf_text(pdf_path: str) -> str:
     reader = PdfReader(pdf_path)
     text = ""
     for page in reader.pages:
         text += page.extract_text() or ""
     return text
 
-# Build system prompt for LLM extraction and mapping
-def build_system_prompt(master_categories):
+
+def build_system_prompt(master_categories: Dict[str, List[str]]) -> str:
     prompt = (
         "You are a compliance extraction agent. "
         "Given the text of a Visa compliance bulletin, extract the following details as a JSON object: "
@@ -80,165 +102,203 @@ def build_system_prompt(master_categories):
     )
     return prompt
 
-# StateGraph node: process a single document
-def process_document_node(state: AgentState, filename: str, master_categories: Dict[str, List[str]]) -> AgentState:
-    pdf_path = os.path.join(DOCUMENTS_FOLDER, filename)
-    text = extract_pdf_text(pdf_path)
-    system_prompt = build_system_prompt(master_categories)
-    llm_query = f"System prompt:\n{system_prompt}\n\nDocument text:\n{text}"  # Limit to 4000 chars for input
-    response = call_llm(llm_query)
-    response = response.replace("json","").replace("\n","").replace("`","").replace("```","")
 
-    # Remove leading/trailing whitespace and newlines
-    response_clean = response.strip()
+def robust_json_loads(s: str) -> Any:
+    """Try best-effort to locate and parse a JSON object within a noisy string."""
+    s = s.strip().strip("`")
+    s = s.replace("```json", "").replace("```", "")
 
+    # direct attempt
     try:
-        doc_json = json.loads(response_clean)
-        print(doc_json)
-        # Parse list_of_changes into ChangeItem objects
-        changes = [ChangeItem(**change) for change in doc_json.get("list_of_changes", [])]
-        summary = DocumentSummary(
-            filename=filename,
-            article_id=doc_json.get("article_id", "Unknown"),
-            publication_date=doc_json.get("publication_date", "Unknown"),
-            effective_date=doc_json.get("effective_date", "Unknown"),
-            topic_of_change=doc_json.get("topic_of_change", "Unknown"),
-            summary_of_change=doc_json.get("summary_of_change", ""),
-            list_of_changes=changes
-        )
-    except Exception as e:
-        print("Error  ", e)
-        summary = DocumentSummary(
-            filename=filename,
-            article_id="Error",
-            publication_date="Error",
-            effective_date="Error",
-            topic_of_change="Error",
-            summary_of_change=str(response_clean),
-            list_of_changes=[]
-        )
-    state.summaries.append(summary)
-    print(f"\nSummary for {filename}:")
-    print(summary.model_dump_json(indent=2))
-    return state
+        return json.loads(s)
+    except Exception:
+        pass
 
-# StateGraph node: save all summaries
-def save_summaries_node(state: AgentState) -> AgentState:
-    with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
-        json.dump([s.dict() for s in state.summaries], f, indent=2)
-    print(f"\nAll summaries saved to {OUTPUT_JSON}")
-    return state
+    # try to find the first {...} block
+    match = re.search(r"\{[\s\S]*\}", s)
+    if match:
+        try:
+            return json.loads(match.group(0))
+        except Exception:
+            pass
 
-if __name__ == "__main__":
+    # last resort: clean stray tokens
+    cleaned = s.replace("json", "").replace("\n", " ")
+    match = re.search(r"\{[\s\S]*\}", cleaned)
+    if match:
+        return json.loads(match.group(0))
+    raise ValueError("Could not parse JSON from model output")
+
+# ----------------------------------------------------------------------------
+# Tools
+# ----------------------------------------------------------------------------
+
+def _extract_compliance_from_pdf(filename: str) -> str:
+    """Tool: Extract compliance summary JSON from a PDF in DOCUMENTS_FOLDER.
+
+    Args:
+        filename: e.g., "AI14871.pdf" (must exist under DOCUMENTS_FOLDER)
+    Returns:
+        JSON string with DocumentSummary-like fields.
+    """
+    pdf_path = os.path.join(DOCUMENTS_FOLDER, filename)
+    if not os.path.isfile(pdf_path):
+        return json.dumps({
+            "status": "error",
+            "message": f"File not found: {pdf_path}"
+        })
 
     master_categories = read_master_categories(MASTER_CATEGORIES_PATH)
-    state = AgentState()
-    graph = StateGraph(AgentState)
-    # Add nodes for each PDF file
-    for filename in os.listdir(DOCUMENTS_FOLDER)[:4]:
-        filename = "AI14871.pdf"
-        if filename.lower().endswith(".pdf"):
-            state = process_document_node(state, filename, master_categories)
+    text = extract_pdf_text(pdf_path)
+    system_prompt = build_system_prompt(master_categories)
 
-        break
-    # Save summaries
-    state = save_summaries_node(state)
+    llm_query = f"System prompt:\n{system_prompt}\n\nDocument text:\n{text}"
+    raw = call_llm(llm_query)
+
+    try:
+        doc_json = robust_json_loads(raw)
+    except Exception as e:
+        # Return the raw text as summary_of_change if parsing fails
+        doc_json = {
+            "filename": filename,
+            "article_id": "Error",
+            "publication_date": "Error",
+            "effective_date": "Error",
+            "topic_of_change": "Error",
+            "summary_of_change": str(raw),
+            "list_of_changes": []
+        }
+
+    # enforce required fields
+    doc_json.setdefault("filename", filename)
+    doc_json.setdefault("article_id", "Unknown")
+    doc_json.setdefault("publication_date", "Unknown")
+    doc_json.setdefault("effective_date", "Unknown")
+    doc_json.setdefault("topic_of_change", "Unknown")
+    doc_json.setdefault("summary_of_change", "")
+    doc_json.setdefault("list_of_changes", [])
+
+    return json.dumps(doc_json, ensure_ascii=False)
 
 
-
-
-
-import json
-from llm import call_llm
-from langchain.tools import tool
-
-@tool
-def create_compliance_markdown_llm(summary_dict: dict, format_instructions: str = None) -> str:
-    # System prompt for LLM summarization
+def _create_compliance_markdown_llm(summary_dict: dict, format_instructions: str = None) -> str:
+    """Tool: Turn a summary dict into professional Markdown via LLM."""
     if format_instructions is None:
         format_instructions = (
             "Summarize the following compliance bulletin for the compliance team in Markdown format. "
             "Include all key details, and use headings, bullet points, and sections as appropriate. "
             "If the format instructions change, adapt the output accordingly."
         )
-    system_prompt = f"{format_instructions}\n\nInput JSON:\n{json.dumps(summary_dict, indent=2)}"
+    system_prompt = f"{format_instructions}\n\nInput JSON:\n{json.dumps(summary_dict, indent=2, ensure_ascii=False)}"
     markdown = call_llm(system_prompt)
     return markdown.strip()
 
+
+def _save_summaries(summaries: List[dict]) -> str:
+    """Tool: Save all summary dicts to OUTPUT_JSON. Returns file path."""
+    with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
+        json.dump(summaries, f, indent=2, ensure_ascii=False)
+    return OUTPUT_JSON
+
+
+def _list_documents() -> str:
+    """Tool: List available PDF filenames under DOCUMENTS_FOLDER."""
+    files = [f for f in os.listdir(DOCUMENTS_FOLDER) if f.lower().endswith('.pdf')]
+    return json.dumps(files, ensure_ascii=False)
+
+# Wrap as LangChain Tools (ReAct-friendly)
+tools = [
+    Tool(
+        name="extract_compliance_from_pdf",
+        func=_extract_compliance_from_pdf,
+        description=(
+            "Extract a structured JSON summary from a Visa compliance PDF. "
+            "Input: the PDF filename (string) located under the 'document' folder. "
+            "Output: JSON string with fields article_id, publication_date, effective_date, topic_of_change, summary_of_change, list_of_changes[]."
+        ),
+    ),
+    Tool(
+        name="create_compliance_markdown_llm",
+        func=lambda summary_json_or_dict, format_instructions=None: _create_compliance_markdown_llm(
+            json.loads(summary_json_or_dict) if isinstance(summary_json_or_dict, str) else summary_json_or_dict,
+            format_instructions,
+        ),
+        description=(
+            "Produce a professional Markdown brief for compliance teams from a summary JSON/dict. "
+            "Inputs: (summary_json_or_dict[, format_instructions])."
+        ),
+    ),
+    Tool(
+        name="save_summaries",
+        func=lambda summaries_json_or_list: _save_summaries(
+            json.loads(summaries_json_or_list) if isinstance(summaries_json_or_list, str) else summaries_json_or_list
+        ),
+        description=(
+            "Save a list of summary dicts to a JSON file. Input: JSON string or list of dicts. Output: file path."
+        ),
+    ),
+    Tool(
+        name="list_documents",
+        func=lambda _=None: _list_documents(),
+        description="List all PDFs in the 'document' folder. No input required.",
+    ),
+]
+
+# ----------------------------------------------------------------------------
+# Simple LangChain LLM wrapper around your call_llm() so we can run a ReAct agent
+# ----------------------------------------------------------------------------
+class LocalCallLLM(LLM):
+    """A minimal LLM wrapper that proxies to your call_llm() helper."""
+
+    @property
+    def _llm_type(self) -> str:  # type: ignore[override]
+        return "local-call-llm"
+
+    def _call(self, prompt: str, stop: List[str] | None = None) -> str:  # type: ignore[override]
+        # ReAct may pass stop tokens; your call_llm can ignore them.
+        return call_llm(prompt)
+
+    @property
+    def _identifying_params(self) -> Dict[str, Any]:  # type: ignore[override]
+        return {}
+
+# ----------------------------------------------------------------------------
+# Agent factory
+# ----------------------------------------------------------------------------
+
+def build_agent(verbose: bool = True):
+    llm = LocalCallLLM()
+    agent = initialize_agent(
+        tools=tools,
+        llm=llm,
+        agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
+        verbose=verbose,
+        handle_parsing_errors=True,
+        max_iterations=15,
+    )
+    return agent
+
+# ----------------------------------------------------------------------------
+# Example usage
+# ----------------------------------------------------------------------------
 if __name__ == "__main__":
-    # Example input (replace with actual input or file read)
-    input_json = '''{
-      "filename": "11.pdf",
-      "article_id": "AI 23",
-      "publication_date": "30 January 2025",
-      "effective_date": "April 2025",
-      "topic_of_change": "Introduction of VCS Hub and Visa B2B Payables",
-      "summary_of_change": "Visa will launch the Visa Commercial Solutions (VCS) Hub platform, along with the next gen",
-      "list_of_changes": [
-        {
-          "description": "Launch of VCS Hub platform and transition of current VPA clients to Visa B2B Payables",
-          "impact": "Awareness only for Issuers",
-          "deadline_date": "April 2025",
-          "source_context": "Effective April 2025, Visa will launch the Visa Commercial Solutions (VCS) Hub platf",
-          "impact_or_awareness": "Awareness",
-          "mapped_category": "Product & Service Updates"
-        },
-        {
-          "description": "New Visa B2B Payables pricing structure implementation",
-          "impact": "Financial impact for VPA clients",
-          "deadline_date": "1 September 2025",
-          "source_context": "The following pricing will be effective 1 September 2025: • Generic user interface (UI): 4.0 bps per use • White–label UI: 8.0 bps per use • Visa Connector: 4.0 bps per use • API + support UI: 2.0 bps per use • Transaction fee: A USD 1.00 per transaction fee cap will be applied to all Visa B2B Payables transactions regardless of the VCS Hub access channel(s) being utilized.",
-          "impact_or_awareness": "Impact",
-          "mapped_category": "Interchange Fees & Assessments"
-        },
-        {
-          "description": "Introduction of VCS Hub monthly subscription fee",
-          "impact": "Financial impact for all VCS Hub users",
-          "deadline_date": "1 October 2025",
-          "source_context": "Additionally, a VCS Hub monthly subscription fee of USD 2,500 will apply to all VCS Hub users effective 1 October 2025.",
-          "impact_or_awareness": "Impact",
-          "mapped_category": "Interchange Fees & Assessments"
-        },
-        {
-          "description": "Implementation of volume-based discount tiers for Visa B2B Payables",
-          "impact": "Potential cost savings for high-volume users",
-          "deadline_date": "1 September 2025",
-          "source_context": "With the new Visa B2B Payables solution and associated pricing, there will be a usage fee discount applied each month where applicable, as driven by usage. The discount will be based on a client's total monthly Visa B2B Payables payment volume and will be applied against the applicable Visa B2B Payables transaction usage fees for that month.",
-          "impact_or_awareness": "Impact",
-          "mapped_category": "Interchange Fees & Assessments"
-        }
-      ]
-    }'''
-    summary_dict = json.loads(input_json)
-    format_instruction = """
-    Create a professional markdown summary for Visa compliance bulletins, suitable for a compliance team. Use the following format:
+    agent = build_agent(verbose=True)
 
-    # [Title: Topic of Change]
+    # Example 1: let the agent discover PDFs, extract one, create markdown, and save JSON.
+    task = (
+        "List the available PDFs, pick 'AI14871.pdf' if present, "
+        "extract the compliance summary JSON from it, then produce a concise Markdown brief. "
+        "Finally, save the JSON summary to disk."
+    )
+    result = agent.run(task)
+    print("\n--- Agent Final Answer ---\n", result)
 
-    **Article ID:** [article_id]
-    **Filename:** [filename]
-    **Publication Date:** [publication_date]
-    **Effective Date:** [effective_date]
-
-    ## Description
-    [summary_of_change]
-
-    ## Key Changes Table
-    | Description | Impact/Awareness | Impact | Deadline Date | Mapped Category |
-    |-------------|------------------|--------|--------------|----------------|
-    | ...fill for each change... |
-
-    ## Details of Each Change
-    For each change, provide:
-    - **Description**
-    - **Impact/Awareness**
-    - **Impact**
-    - **Deadline Date**
-    - **Source Context**
-    - **Mapped Category**
-
-    Make the summary concise, clear, and easy to scan for compliance professionals. If the format instructions change, adapt the output accordingly.
-    """
-    markdown = create_compliance_markdown_llm(summary_dict, format_instruction)
-    print(markdown)
-
+    # Example 2: explicitly instruct the sequence
+    # 1) Extract JSON from a given file, 2) Turn it into Markdown, 3) Save summaries
+    explicit_plan = (
+        "Use extract_compliance_from_pdf with input 'AI14871.pdf'. "
+        "Then pass the returned JSON to create_compliance_markdown_llm to create a Markdown brief. "
+        "After that, call save_summaries with a single-item list containing the JSON summary."
+    )
+    result2 = agent.run(explicit_plan)
+    print("\n--- Agent Final Answer (explicit plan) ---\n", result2)
