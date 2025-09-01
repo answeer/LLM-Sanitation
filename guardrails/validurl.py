@@ -19,9 +19,11 @@ from pydantic import BaseModel, Field
 # Config
 # ----------------------------------------------------------------------------
 load_dotenv()
-MASTER_CATEGORIES_PATH = os.path.join("metadata", "master_catagories.txt")
-DOCUMENTS_FOLDER = "document"
-OUTPUT_JSON = "visa_compliance_langgraph.json"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MASTER_CATEGORIES_PATH = os.path.join(BASE_DIR, "metadata", "master_catagories.txt")
+DOCUMENTS_FOLDER = os.path.join(BASE_DIR, "document")
+OUTPUT_JSON = os.path.join(BASE_DIR, "visa_compliance_langgraph.json")
+
 
 # ----------------------------------------------------------------------------
 # Data models (Pydantic)
@@ -162,7 +164,7 @@ def _extract_compliance_from_pdf(filename: str) -> str:
 def _create_compliance_markdown_llm(summary_dict: dict, format_instructions: str = None) -> str:
     if format_instructions is None:
         format_instructions = (
-            "Summarize the following compliance bulletin for the compliance team in Markdown format. "
+             "Summarize the following compliance bulletin for the compliance team in Markdown format. "
             "Include all key details, and use headings, bullet points, and sections as appropriate. "
             "If the format instructions change, adapt the output accordingly."
         )
@@ -175,7 +177,6 @@ def _save_summaries(summaries: List[dict]) -> str:
     with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
         json.dump(summaries, f, indent=2, ensure_ascii=False)
     return OUTPUT_JSON
-
 
 def _list_documents() -> str:
     files = [f for f in os.listdir(DOCUMENTS_FOLDER) if f.lower().endswith('.pdf')]
@@ -199,8 +200,35 @@ tools = [
             format_instructions,
         ),
         description=(
-            "Produce a professional Markdown brief for compliance teams from a summary JSON/dict. "
-            "Inputs: (summary_json_or_dict[, format_instructions])."
+            """
+    Create a professional markdown summary for Visa compliance bulletins, suitable for a compliance team. Use the following format:
+
+    # [Title: Topic of Change]
+
+    **Article ID:** [article_id]
+    **Filename:** [filename]
+    **Publication Date:** [publication_date]
+    **Effective Date:** [effective_date]
+
+    ## Description
+    [summary_of_change]
+
+    ## Key Changes Table
+    | Description | Impact/Awareness | Impact | Deadline Date | Mapped Category |
+    |-------------|------------------|--------|--------------|----------------|
+    | ...fill for each change... |
+
+    ## Details of Each Change
+    For each change, provide:
+    - **Description**
+    - **Impact/Awareness**
+    - **Impact**
+    - **Deadline Date**
+    - **Source Context**
+    - **Mapped Category**
+
+    Make the summary concise, clear, and easy to scan for compliance professionals. If the format instructions change, adapt the output accordingly.
+    """
         ),
     ),
     Tool(
@@ -214,8 +242,8 @@ tools = [
     ),
     Tool(
         name="list_documents",
-        func=lambda _=None: _list_documents(),
-        description="List all PDFs in the 'document' folder. No input required.",
+        func=lambda _: _list_documents(),
+        description="List available PDF documents in the {} folder.".format(DOCUMENTS_FOLDER),
     ),
 ]
 
@@ -245,8 +273,20 @@ def build_agent(verbose: bool = True):
         llm=llm,
         agent=AgentType.CONVERSATIONAL_REACT_DESCRIPTION,
         verbose=verbose,
+        handle_parsing_errors=True,
     )
     return agent
+
+def chat(agent, query: str, chat_history: list):
+    """Send query to agent, keep track of chat history automatically."""
+    result = agent.invoke({"input": query, "chat_history": chat_history})
+
+    # 保存到 chat_history
+    chat_history.append(("user", query))
+    chat_history.append(("assistant", result))
+
+    return result
+
 
 # ----------------------------------------------------------------------------
 # Example usage
@@ -254,18 +294,17 @@ def build_agent(verbose: bool = True):
 if __name__ == "__main__":
     agent = build_agent(verbose=True)
 
+    chat_history = []
+    filename = "AI14871.pdf"
     task = (
-        "List the available PDFs, pick 'AI14871.pdf' if present, "
-        "extract the compliance summary JSON from it, then produce a concise Markdown brief. "
-        "Finally, save the JSON summary to disk."
+        "List the available PDFs, pick {} if present, ".format(filename),
+        "Use extract_compliance_from_pdf with input {}. ".format(filename),
+        "Then, save the JSON summary to disk."
+        "After that, take the JSON summary to call create_compliance_markdown_llm to Create a professional markdown summary."
     )
-    result = agent.run(task)
-    print("\n--- Agent Final Answer ---\n", result)
+    result = chat(agent, task, chat_history)
+    print("\n--- Agent Final Answer (task) ---\n", result)
 
-    explicit_plan = (
-        "Use extract_compliance_from_pdf with input 'AI14871.pdf'. "
-        "Then pass the returned JSON to create_compliance_markdown_llm to create a Markdown brief. "
-        "After that, call save_summaries with a single-item list containing the JSON summary."
-    )
-    result2 = agent.run(explicit_plan)
-    print("\n--- Agent Final Answer (explicit plan) ---\n", result2)
+
+
+
