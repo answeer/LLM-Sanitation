@@ -1,24 +1,17 @@
-import os
+import os 
 import re
 import json
 from typing import List, Dict, Any
-from dataclasses import asdict
 
 from PyPDF2 import PdfReader
 from dotenv import load_dotenv
 
 # ---- Your existing LLM shim -------------------------------------------------
-# Expecting a local helper that calls your preferred LLM (e.g., OpenAI, Azure, etc.)
 from llm import call_llm
 
 # ---- LangChain imports ------------------------------------------------------
 from langchain.agents import initialize_agent, AgentType, Tool
-try:
-    # Newer LC split packages
-    from langchain_core.language_models import LLM
-except Exception:  # pragma: no cover
-    # Fallback for older LC
-    from langchain.llms.base import LLM  # type: ignore
+from langchain_core.language_models import LLM
 
 from pydantic import BaseModel, Field
 
@@ -56,7 +49,6 @@ class DocumentSummary(BaseModel):
 # ----------------------------------------------------------------------------
 
 def read_master_categories(path: str) -> Dict[str, List[str]]:
-    """Read master categories from a simple enumerated text file."""
     categories: Dict[str, List[str]] = {}
     if not os.path.exists(path):
         return categories
@@ -68,7 +60,6 @@ def read_master_categories(path: str) -> Dict[str, List[str]]:
         if not line:
             continue
         if len(line) > 2 and line[0].isdigit() and line[1] == ".":
-            # e.g. "1. Category Name"
             current_cat = line[3:]
             categories[current_cat] = []
         elif current_cat:
@@ -104,17 +95,14 @@ def build_system_prompt(master_categories: Dict[str, List[str]]) -> str:
 
 
 def robust_json_loads(s: str) -> Any:
-    """Try best-effort to locate and parse a JSON object within a noisy string."""
     s = s.strip().strip("`")
     s = s.replace("```json", "").replace("```", "")
 
-    # direct attempt
     try:
         return json.loads(s)
     except Exception:
         pass
 
-    # try to find the first {...} block
     match = re.search(r"\{[\s\S]*\}", s)
     if match:
         try:
@@ -122,7 +110,6 @@ def robust_json_loads(s: str) -> Any:
         except Exception:
             pass
 
-    # last resort: clean stray tokens
     cleaned = s.replace("json", "").replace("\n", " ")
     match = re.search(r"\{[\s\S]*\}", cleaned)
     if match:
@@ -134,13 +121,6 @@ def robust_json_loads(s: str) -> Any:
 # ----------------------------------------------------------------------------
 
 def _extract_compliance_from_pdf(filename: str) -> str:
-    """Tool: Extract compliance summary JSON from a PDF in DOCUMENTS_FOLDER.
-
-    Args:
-        filename: e.g., "AI14871.pdf" (must exist under DOCUMENTS_FOLDER)
-    Returns:
-        JSON string with DocumentSummary-like fields.
-    """
     pdf_path = os.path.join(DOCUMENTS_FOLDER, filename)
     if not os.path.isfile(pdf_path):
         return json.dumps({
@@ -157,8 +137,7 @@ def _extract_compliance_from_pdf(filename: str) -> str:
 
     try:
         doc_json = robust_json_loads(raw)
-    except Exception as e:
-        # Return the raw text as summary_of_change if parsing fails
+    except Exception:
         doc_json = {
             "filename": filename,
             "article_id": "Error",
@@ -169,7 +148,6 @@ def _extract_compliance_from_pdf(filename: str) -> str:
             "list_of_changes": []
         }
 
-    # enforce required fields
     doc_json.setdefault("filename", filename)
     doc_json.setdefault("article_id", "Unknown")
     doc_json.setdefault("publication_date", "Unknown")
@@ -182,7 +160,6 @@ def _extract_compliance_from_pdf(filename: str) -> str:
 
 
 def _create_compliance_markdown_llm(summary_dict: dict, format_instructions: str = None) -> str:
-    """Tool: Turn a summary dict into professional Markdown via LLM."""
     if format_instructions is None:
         format_instructions = (
             "Summarize the following compliance bulletin for the compliance team in Markdown format. "
@@ -195,18 +172,16 @@ def _create_compliance_markdown_llm(summary_dict: dict, format_instructions: str
 
 
 def _save_summaries(summaries: List[dict]) -> str:
-    """Tool: Save all summary dicts to OUTPUT_JSON. Returns file path."""
     with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
         json.dump(summaries, f, indent=2, ensure_ascii=False)
     return OUTPUT_JSON
 
 
 def _list_documents() -> str:
-    """Tool: List available PDF filenames under DOCUMENTS_FOLDER."""
     files = [f for f in os.listdir(DOCUMENTS_FOLDER) if f.lower().endswith('.pdf')]
     return json.dumps(files, ensure_ascii=False)
 
-# Wrap as LangChain Tools (ReAct-friendly)
+# Wrap as LangChain Tools
 tools = [
     Tool(
         name="extract_compliance_from_pdf",
@@ -245,25 +220,22 @@ tools = [
 ]
 
 # ----------------------------------------------------------------------------
-# Simple LangChain LLM wrapper around your call_llm() so we can run a ReAct agent
+# Simple LangChain LLM wrapper around call_llm()
 # ----------------------------------------------------------------------------
 class LocalCallLLM(LLM):
-    """A minimal LLM wrapper that proxies to your call_llm() helper."""
-
     @property
-    def _llm_type(self) -> str:  # type: ignore[override]
+    def _llm_type(self) -> str:
         return "local-call-llm"
 
-    def _call(self, prompt: str, stop: List[str] | None = None) -> str:  # type: ignore[override]
-        # ReAct may pass stop tokens; your call_llm can ignore them.
+    def _call(self, prompt: str, stop: List[str] | None = None) -> str:
         return call_llm(prompt)
 
     @property
-    def _identifying_params(self) -> Dict[str, Any]:  # type: ignore[override]
+    def _identifying_params(self) -> Dict[str, Any]:
         return {}
 
 # ----------------------------------------------------------------------------
-# Agent factory
+# Agent factory (using OpenAI Functions Agent)
 # ----------------------------------------------------------------------------
 
 def build_agent(verbose: bool = True):
@@ -271,10 +243,8 @@ def build_agent(verbose: bool = True):
     agent = initialize_agent(
         tools=tools,
         llm=llm,
-        agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
+        agent=AgentType.CONVERSATIONAL_REACT_DESCRIPTION,
         verbose=verbose,
-        handle_parsing_errors=True,
-        max_iterations=15,
     )
     return agent
 
@@ -284,7 +254,6 @@ def build_agent(verbose: bool = True):
 if __name__ == "__main__":
     agent = build_agent(verbose=True)
 
-    # Example 1: let the agent discover PDFs, extract one, create markdown, and save JSON.
     task = (
         "List the available PDFs, pick 'AI14871.pdf' if present, "
         "extract the compliance summary JSON from it, then produce a concise Markdown brief. "
@@ -293,8 +262,6 @@ if __name__ == "__main__":
     result = agent.run(task)
     print("\n--- Agent Final Answer ---\n", result)
 
-    # Example 2: explicitly instruct the sequence
-    # 1) Extract JSON from a given file, 2) Turn it into Markdown, 3) Save summaries
     explicit_plan = (
         "Use extract_compliance_from_pdf with input 'AI14871.pdf'. "
         "Then pass the returned JSON to create_compliance_markdown_llm to create a Markdown brief. "
