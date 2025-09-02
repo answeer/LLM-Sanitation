@@ -242,7 +242,7 @@ tools = [
     ),
     Tool(
         name="list_documents",
-        func=lambda _: _list_documents(),
+        func=lambda _=None:_list_documents(),
         description="List available PDF documents in the {} folder.".format(DOCUMENTS_FOLDER),
     ),
 ]
@@ -296,15 +296,14 @@ if __name__ == "__main__":
 
     chat_history = []
     filename = "AI14871.pdf"
-    task = (
-        "List the available PDFs, pick {} if present, ".format(filename),
-        "Use extract_compliance_from_pdf with input {}. ".format(filename),
-        "Then, save the JSON summary to disk."
-        "After that, take the JSON summary to call create_compliance_markdown_llm to Create a professional markdown summary."
-    )
-    result = chat(agent, task, chat_history)
-    print("\n--- Agent Final Answer (task) ---\n", result)
+    # task = (
+    #     "List the available PDFs using _list_documents tool, pick {} if present, ".format(filename),
+    #     "Use extract_compliance_from_pdf with input {}. ".format(filename),
+    #     "Then, save the JSON summary to disk using the _save_summaries tool."
+    #     "After that, take the JSON summary to call create_compliance_markdown_llm to Create a professional markdown summary."
+    # )
+    # result = chat(agent, task, chat_history)
+    # print("\n--- Agent Final Answer (task) ---\n", result)
 
-
-
-
+    result = chat(agent, "Use _list_documents list the available PDFs in the path of {}, pick {} if present, ".format(DOCUMENTS_FOLDER,filename), chat_history)
+    print("\n--- Step 1: List Documents ---\n", result)
