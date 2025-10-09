@@ -1,18 +1,57 @@
-from llm_guard.input_scanners import Language
-from llm_guard.input_scanners.language import MatchType
+def sentence_split(
+    col: Column,
+    chunk_size: int,
+    chunk_overlap: int,
+    explode=True,
+):
+    split_schema = ArrayType(
+        StructType([StructField("content_chunk", StringType(), False)])
+    )
 
-# Initialize the scanner
-scanner = Language(valid_languages=["en"], match_type=MatchType.FULL)  # Add other valid language codes (ISO 639-1) as needed
+    def _split_sentence(content: str):
+        if not content:
+            return []
+        sentences = re.split(r'(?<=[。！？.!?])', content)
+        return [{"content_chunk": s.strip()} for s in sentences if s.strip()]
 
-# Prepare a test prompt
-prompt = """
-这是一段中文提示词。
-"""
+    split_func = data_prep_udf(_split_sentence, split_schema)(col)
+    if explode:
+        return func.explode(split_func)
+    return split_func
 
-# Scan the prompt using the scanner
-sanitized_prompt, is_valid, risk_score = scanner.scan(prompt)
 
-# Print the results
-print("Sanitized Prompt:", sanitized_prompt)
-print("Is Valid:", is_valid)
-print("Risk Score:", risk_score)
+
+def structured_chunk(text):
+    """
+    Splits text into logical chunks, grouping headings with their following paragraphs.
+    Returns a list of dicts: {"heading": ..., "content": ...}
+    """
+    lines = text.split('\n')
+    chunks = []
+    current_heading = None
+    current_content = []
+
+    heading_pattern = re.compile(r'^(#{1,6})\s+(.*)')
+
+    for line in lines:
+        match = heading_pattern.match(line)
+        if match:
+            # Save previous chunk if exists
+            if current_heading or current_content:
+                chunks.append({
+                    "heading": current_heading,
+                    "content": "\n".join(current_content).strip()
+                })
+            # Start new chunk
+            current_heading = match.group(2)
+            current_content = []
+        else:
+            current_content.append(line)
+    # Add last chunk
+    if current_heading or current_content:
+        chunks.append({
+            "heading": current_heading,
+            "content": "\n".join(current_content).strip()
+        })
+    # Remove empty chunks
+    return [chunk for chunk in chunks if chunk["content"]]
