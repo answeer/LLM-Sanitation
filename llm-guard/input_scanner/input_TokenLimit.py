@@ -55,3 +55,11 @@ def create_gold(spark, gold_table_name):
     )
 
     LogUtil.log(LogType.TRANSACTION, LogLevel.INFO,'Gold table created successfully')
+
+
+
+extract_metadata:
+    entities:
+      article_id: "Article id"
+      publication_date: "Publication date "
+      effective_date: "Effective date "
