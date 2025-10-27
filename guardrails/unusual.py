@@ -1,32 +1,25 @@
-def create_silver(spark, silver_table_name, config, manifest_config):
-    metadata_fields = []
-    if (manifest_config and 
-        "extract_metadata" in manifest_config):
-        metadata_fields = list(manifest_config["extract_metadata"]["entities"].keys()) if manifest_config["extract_metadata"] else []
+from openai import OpenAI
+import os
 
-    metadata_columns = ""
-    for field in metadata_fields:
-        metadata_columns += f",\n {field} STRING"
+# How to get your Databricks token: https://docs.databricks.com/en/dev-tools/auth/pat.html
+DATABRICKS_TOKEN = os.environ.get('DATABRICKS_TOKEN')
+# Alternatively in a Databricks notebook you can use this:
+# DATABRICKS_TOKEN = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
 
-    LogUtil.log(LogType.TRANSACTION, LogLevel.INFO,'metadata_columns'+ str(metadata_columns))
-    spark.sql(
-        f"""
-    CREATE TABLE IF NOT EXISTS {silver_table_name} (
-    input_file STRING,
-    file_hash STRING,
-    page_nr STRING,
-    page_content STRING,
-    document_name STRING,
-    datetime TIMESTAMP
-    {metadata_columns}
-    ) TBLPROPERTIES (delta.enableChangeDataFeed = true)
-            """
-    )
+client = OpenAI(
+    api_key=DATABRICKS_TOKEN,
+    base_url="https://xxxxxxxxxxxxxxxxx.xxxxxxxxxx.net/serving-endpoints"
+)
 
-    spark.sql(
-        f"""
-    alter table {silver_table_name}
-    set tags ('createdBy'='{config['created_by']}','managedby' ='{config['managedby']}' ,'lob'='{config['lob']}','supportedby'='{config['supportedby']}','ito_unit'='{config['ito_unit']}','business_unit'='{config['business_unit']}',"project_costcenter_id"='{config['project_costcenter_id']}','bau_costcenter_id'='{config['bau_costcenter_id']}','clarity_id' ='{config['clarity_id']}','app_id'='{config['app_id']}',"rag_serving_endpoint_name"='{config['rag_serving_endpoint_name']}')
-            """
-    )
-    LogUtil.log(LogType.TRANSACTION, LogLevel.INFO, "Silver table created successfully")
+response = client.chat.completions.create(
+    model="databricks-claude-sonnet-4-5",
+    messages=[
+        {
+            "role": "user",
+            "content": "What is an LLM agent?"
+        }
+    ],
+    max_tokens=5000
+)
+
+print(response.choices[0].message.content)
