@@ -1,49 +1,74 @@
-import hashlib
 import pyspark.sql.functions as func
 from RAGaaS.data_pipeline.medallian_tables.from_files.create_medallian_table import (
-    create_bronze,
+    create_silver,
 )
+import pyspark.sql.functions as func
+from RAGaaS.data_pipeline.data_reader.pdf_reader import read_pdf_spark
+from RAGaaS.data_pipeline.medallian_tables.from_files.extract_matadata import MetadataExtractor
+from RAGaaS.logs.logging_setup   import LogUtil, LogType, LogLevel
 import mlflow
 import time
-from RAGaaS.logs.logging_setup   import LogUtil, LogType, LogLevel
+##
 
-def hash_text(text: str) -> str:
-    """Hash text using SHA-256"""
-    if isinstance(text, bytearray):
-        text = text.decode(errors='replace')  # Convert bytearray to string
-    return hashlib.sha256(text.encode()).hexdigest()
+def file_cleaning(silver_df):
+    regular_expression = r".*\/([^\/]+)\/([^\/]+)\.pdf"
+    return silver_df.withColumn(
+        "document_name",
+        func.concat(
+            func.regexp_replace(
+                func.lower(func.regexp_extract("input_file", regular_expression, 1)),
+                " ",
+                "_",
+            ),
+            func.lit("/"),
+            func.concat(
+                func.regexp_replace(
+                    func.lower(
+                        func.regexp_extract("input_file", regular_expression, 2)
+                    ),
+                    " ",
+                    "_",
+                )
+            ),
+        ),
+    ).withColumn("datetime", func.current_timestamp())
 
 
-hash_text_udf = func.udf(hash_text)
-
-def create(spark, bronze_table_name, run_id, source_folder,config):
+def create(spark, silver_table_name, run_id, bronze_df,config, manifest_config):
     start_time = time.time()
 
-    create_bronze(spark, bronze_table_name, config)
+    create_silver(spark, silver_table_name,config) # pragma: no cover
 
-    bronze_df = (
-        spark.read.format("binaryFile")
-        .option("recursiveFileLookup", "true")
-        .option("pathGlobFilter", "*.pdf")
-        .load(source_folder)
-        .withColumnRenamed("path", "input_file")
-        .withColumn("datetime", func.current_timestamp())
-        .withColumn("file_hash", hash_text_udf(func.col("content")))
+    df_parsed = bronze_df.select(
+        func.col("input_file"),
+        func.col("file_hash"),
+        read_pdf_spark("content").alias("parsed_pdf_pages"),
     )
-    # Read existing file_hashes from the bronze table
-    existing_hashes_df = spark.table(bronze_table_name).select("file_hash")
 
-    # Filter out duplicates from the new DataFrame
-    bronze_df_filtered = bronze_df.join(
-        existing_hashes_df, on="file_hash", how="left_anti"
+    silver_df = (
+        df_parsed.select("*", func.explode("parsed_pdf_pages"))
+        .withColumnRenamed("key", "page_nr")
+        .withColumnRenamed("value", "page_content")
+        .drop("parsed_pdf_pages")
     )
-    # Write only non-duplicate records
-    bronze_df_filtered.write.format("delta").mode("append").saveAsTable(bronze_table_name)
 
-    #bronze_df.write.format("delta").mode("append").saveAsTable(bronze_table_name)
-    LogUtil.log(LogType.TRANSACTION, LogLevel.INFO, 'Bronze table created successfully.')
+    # Extract meta data only if specified in manifest
+    if manifest_config["extract_metadata"]:
+        metadata_extractor = MetadataExtractor(manifest_config)
+        metadata_df = metadata_extractor.create_metadata_dataframe(spark, silver_df)
+
+        if metadata_extractor.fields:
+            silver_df = silver_df.join(metadata_df, ["input_file", "page_nr"], "left")
+
+    silver_df = file_cleaning(silver_df)
+
+    silver_df.write.format("delta").mode("overwrite").saveAsTable(silver_table_name)
+
     walltime = round(time.time() - start_time, 2)
+    LogUtil.log(LogType.TRANSACTION, LogLevel.INFO, 'Silver table created successfully.')
+
     with mlflow.start_run(run_id=run_id):
-        mlflow.log_param("bronze_table_name", bronze_table_name)
-        mlflow.log_metric("bronze_walltime_seconds", walltime)
-    return bronze_df
+        mlflow.log_param("silver_table_name", silver_table_name)
+        mlflow.log_metric("silver_walltime_seconds", walltime)
+
+    return silver_df
