@@ -1,112 +1,40 @@
-from pypdf import PdfReader
-import os
+from __future__ import annotations
 from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
+from pathlib import Path
+import sys
+script_path = Path(sys.argv[0])
+ROOT = str(Path(script_path).parent)
+sys.path.insert(0, str(Path(script_path).parent.parent))
 
-def read_pdf(pdf_path):
-    """
-    Extract text from a PDF file.
-    
-    Args:
-        pdf_path (str): Path to the PDF file
-        
-    Returns:
-        str: Extracted text from all pages, or None if error occurs
-    """
-    try:
-        with open(pdf_path, "rb") as file:
-            reader = PdfReader(file)
-            
-            # Check if PDF is encrypted
-            if reader.is_encrypted:
-                print(f"Warning: PDF '{os.path.basename(pdf_path)}' is encrypted and cannot be read")
-                return None
-            
-            text = ""
-            for page_num, page in enumerate(reader.pages, 1):
-                page_text = page.extract_text()
-                if page_text:
-                    text += f"\n--- Page {page_num} ---\n{page_text}\n"
-            
-            return text
-            
-    except FileNotFoundError:
-        print(f"Error: File not found at {pdf_path}")
-        return None
-    except Exception as e:
-        print(f"Error reading PDF '{os.path.basename(pdf_path)}': {str(e)}")
-        return None
+from prompt_engineering.prompt_builder import load_config, render_prompt
+from utils.schema_loader import load_extraction_schema
+from llm.llm_client import LLMClient
+from utils.json_utils import coerce_to_json
+from utils.read_pdf import read_pdf
+from contract_extractor.logs.logging_setup import LogUtil, LogType, LogLevel
+from databricks_langchain.chat_models import ChatDatabricks
 
-def batch_pdf_to_txt(input_folder, output_folder=None):
-    """
-    Convert all PDF files in input folder to TXT files.
-    
-    Args:
-        input_folder (str): Path to folder containing PDF files
-        output_folder (str): Path to output folder (optional, defaults to input_folder)
-    """
-    input_path = Path(input_folder)
-    
-    # Set output folder
-    if output_folder is None:
-        output_path = input_path
-    else:
-        output_path = Path(output_folder)
-        output_path.mkdir(parents=True, exist_ok=True)
-    
-    # Check if input folder exists
-    if not input_path.exists():
-        print(f"Error: Input folder '{input_folder}' does not exist")
-        return
-    
-    # Find all PDF files
-    pdf_files = list(input_path.glob("*.pdf"))
-    
-    if not pdf_files:
-        print(f"No PDF files found in '{input_folder}'")
-        return
-    
-    print(f"Found {len(pdf_files)} PDF files to process...")
-    
-    success_count = 0
-    failed_count = 0
-    
-    for pdf_file in pdf_files:
-        print(f"Processing: {pdf_file.name}")
-        
-        # Extract text from PDF
-        content = read_pdf(pdf_file)
-        
-        if content is not None:
-            # Create output filename (same name but with .txt extension)
-            output_filename = output_path / f"{pdf_file.stem}.txt"
-            
-            try:
-                # Save to text file
-                with open(output_filename, 'w', encoding="utf-8") as f:
-                    f.write(content)
-                print(f"  ✓ Successfully converted to: {output_filename.name}")
-                success_count += 1
-                
-            except Exception as e:
-                print(f"  ✗ Error saving {output_filename.name}: {str(e)}")
-                failed_count += 1
-        else:
-            failed_count += 1
-    
-    # Print summary
-    print(f"\n=== Conversion Summary ===")
-    print(f"Total PDF files processed: {len(pdf_files)}")
-    print(f"Successfully converted: {success_count}")
-    print(f"Failed: {failed_count}")
-    print(f"Output folder: {output_path}")
+def extract(contract_path: str | Path, schema_path: str | Path, config_path: str | Path) -> Dict[str, Any]:
 
-def main():
-    # 配置路径
-    input_folder = r"C:\Users\1657820\Documents\Downloads\1\20251021"  # 输入文件夹路径
-    output_folder = None  # 设置为None则输出到同一文件夹，或指定其他文件夹路径
-    
-    # 执行批量转换
-    batch_pdf_to_txt(input_folder, output_folder)
+    LogUtil.log(LogType.APPLICATION, LogLevel.INFO,'Step 1: Loading config..')
+    config = load_config(str(config_path))
+    schema = load_extraction_schema(str(schema_path))
 
-if __name__ == "__main__":
-    main()
+
+    # contract_content = read_pdf(contract_path)
+
+    # Build prompts
+    # Split the rendered prompt into a concise system + user composition
+
+    LogUtil.log(LogType.APPLICATION, LogLevel.INFO,'Step 2: Rendering prompt..')
+    rendered = render_prompt(config.prompt_template, schema, Path(contract_path).read_text(encoding="utf-8"))
+
+    # rendered = render_prompt(config.prompt_template, schema, contract_content)
+    user_prompt = rendered
+    LogUtil.log(LogType.APPLICATION, LogLevel.INFO,'Step 3: Runing the LLM inference..')
+    client = LLMClient(model=config.model, temperature=config.temperature, max_output_tokens=config.max_output_tokens)
+    raw = client.chat(user_prompt)
+    LogUtil.log(LogType.APPLICATION, LogLevel.INFO,'Step 4: Parsing the output as JSON..')
+    data = coerce_to_json(raw)
+    return data
