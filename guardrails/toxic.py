@@ -1,31 +1,18 @@
-# Import Guard and Validator
-from guardrails.hub import ToxicLanguage
-from guardrails import Guard
+from pypdf import PdfReader
 
-# Use the Guard with the validator
-guard = Guard().use(
-    ToxicLanguage, threshold=0.5, validation_method="sentence", on_fail="fix"
-)
 
-# # Test passing response
-# guard.validate("Love how you think and attack the problem. Great job!")
+def read_pdf(pdf_path):
+    with open(pdf_path, "rb") as file:
+        reader = PdfReader(file)
+        text = ""
+        for page in reader.pages:
+            text += page.extract_text()  
+    return text
 
-# try:
-#     # Test failing response
-#     guard.validate(
-#         "Please look carefully. You are a stupid idiot who can't do anything right."
-#     )
-# except Exception as e:
-#     print(e)
 
-text = "Please look carefully. You are a stupid idiot who can't do anything right."
+content = read_pdf(pdf_path=r"C:\Users\1657820\Documents\Downloads\1\20251021\1.pdf")
 
-raw_llm_output,validated_output, _, validation_passed, *rest= guard.parse(
-    llm_output=text,
-    metadata={},
-)
+print(content)
 
-print("raw_llm_output: ",raw_llm_output)
-print("validated_output: ",validated_output)
-print("validation_passed: ",validation_passed)
-
+with open('example.txt', 'w', encoding="utf-8") as file:
+    file.write(content)
