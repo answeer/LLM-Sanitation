@@ -1,292 +1,245 @@
-# bronze_csv_excel.py
-import time
-import mlflow
-from pyspark.sql import functions as F
-from RAGaaS.logs.logging_setup import LogUtil, LogType, LogLevel
-from RAGaaS.data_pipeline.medallian_tables.from_files.create_medallian_table import create_bronze
+from __future__ import annotations
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple, List
+import json
+import sys
+from datetime import datetime
 
-def _df_is_empty(df):
-    return df is None or df.limit(1).count() == 0
+script_path = Path(sys.argv[0])
+ROOT = str(Path(script_path).parent)
+sys.path.insert(0, str(Path(script_path).parent.parent))
 
-# mode: "append" | "cold_update"
-def create(spark, bronze_table_name, run_id, source_folder, config, mode="append"):
-    start_time = time.time()
-    create_bronze(spark, bronze_table_name, config)
+from prompt_engineering.prompt_builder import load_config, render_prompt
+from utils.schema_loader import load_extraction_schema
+from llm.llm_client_databricks import LLMClient
+from utils.json_utils import coerce_to_json
+from utils.read_pdf import read_pdf
+from utils.manifest_loader import load_manifest, manifest_to_human_instructions
+from contract_extractor.logs.logging_setup import LogUtil, LogType, LogLevel
+from databricks_langchain.chat_models import ChatDatabricks
 
-    # 读取 CSV/Excel，作为二进制仅用于计算 hash；不把 content 落表、不传给下游
-    src_df = (
-        spark.read.format("binaryFile")
-        .option("recursiveFileLookup", "true")
-        .option("pathGlobFilter", "*.{csv,CSV,xls,XLS,xlsx,XLSX}")
-        .load(source_folder)
-        .withColumnRenamed("path", "input_file")
-        .withColumn("file_name", F.regexp_extract(F.col("input_file"), r"([^/\\]+)$", 1))
-        .withColumn("file_hash", F.sha2(F.col("content"), 256))  # 对二进制内容计算 SHA-256
-        .withColumn("datetime", F.current_timestamp())
-        .select("input_file", "file_name", "file_hash", "modificationTime", "length", "datetime")
-    )
+def extract_single_file(contract_path: str | Path, schema_path: str | Path, config_path: str | Path, manifest_path: str | Path) -> Dict[str, Any]:
+    """
+    Extract information from a single contract file
+    """
+    try:
+        LogUtil.log(LogType.APPLICATION, LogLevel.INFO, f'Processing file: {contract_path}')
+        
+        # Load config and schema
+        config = load_config(str(config_path))
+        schema = load_extraction_schema(str(schema_path))
+        manifest = load_manifest(str(manifest_path))
+        manifest_instruction = manifest_to_human_instructions(manifest)
 
-    table_exists = spark.catalog.tableExists(bronze_table_name)
+        # Read contract content
+        # contract_content = Path(contract_path).read_text(encoding="utf-8")
+        contract_content = read_pdf(contract_path)
+        
+        if not contract_content.strip():
+            LogUtil.log(LogType.APPLICATION, LogLevel.WARNING, f'Empty file: {contract_path}')
+            return {"error": "Empty file", "filename": str(contract_path)}
 
-    if not table_exists:
-        delta_append_df = src_df
-        delta_delete_names_df = spark.createDataFrame([], src_df.select("file_name").schema)
+        # Build prompt
+        rendered = render_prompt(config.prompt_template, schema, contract_content,manifest_instruction)
+        user_prompt = rendered
+        
+        # Run LLM inference
+        client = LLMClient(
+            model=config.model, 
+            temperature=config.temperature, 
+            max_output_tokens=config.max_output_tokens
+        )
+        raw = client.chat(user_prompt)
+        
+        # Parse output
+        data = coerce_to_json(raw)
+        
+        # Add metadata
+        # data["_metadata"] = {
+        #     "source_file": str(contract_path),
+        #     "model_used": config.model,
+        #     "extraction_timestamp": datetime.now().isoformat(),
+        #     "status": "success"
+        # }
+        
+        return data
+        
+    except Exception as e:
+        LogUtil.log(LogType.APPLICATION, LogLevel.ERROR, f"Extraction failed for {contract_path}: {str(e)}")
+        return {
+            "error": str(e),
+            "filename": str(contract_path),
+            "_metadata": {
+                "source_file": str(contract_path),
+                "extraction_timestamp": datetime.now().isoformat(),
+                "status": "failed"
+            }
+        }
 
-        if not _df_is_empty(delta_append_df):
-            (delta_append_df.write.format("delta").mode("append").saveAsTable(bronze_table_name))
-
-    else:
-        existing = spark.table(bronze_table_name).select("file_name", "file_hash")
-        # 新来但未出现过的 (file_name, file_hash)
-        nondupe_src = src_df.join(existing, on=["file_name", "file_hash"], how="left_anti")
-
-        if mode == "append":
-            delta_append_df = nondupe_src
-            delta_delete_names_df = spark.createDataFrame([], src_df.select("file_name").schema)
-
-            if not _df_is_empty(delta_append_df):
-                delta_append_df.write.format("delta").mode("append").saveAsTable(bronze_table_name)
-
-        elif mode == "cold_update":
-            existing_names = spark.table(bronze_table_name).select("file_name").distinct()
-            same_name_new = nondupe_src.join(existing_names, on="file_name", how="inner")     # 同名新 hash
-            brand_new     = nondupe_src.join(existing_names, on="file_name", how="left_anti") # 全新文件名
-
-            to_delete_names = same_name_new.select("file_name").distinct()
-            if not _df_is_empty(to_delete_names):
-                to_delete_names.createOrReplaceTempView("_bronze_to_delete_names")
-                spark.sql(f"""
-                    DELETE FROM {bronze_table_name}
-                    WHERE file_name IN (SELECT file_name FROM _bronze_to_delete_names)
-                """)
-                delta_delete_names_df = to_delete_names.select("file_name")
+def extract_from_folder(
+    input_folder: str | Path,
+    output_folder: str | Path,
+    schema_path: str | Path,
+    config_path: str | Path,
+    manifest_path: str | Path,
+    file_extensions: List[str] = None
+) -> Dict[str, Any]:
+    """
+    Extract information from all files in a folder and save results to another folder
+    
+    Args:
+        input_folder: Path to folder containing contract files
+        output_folder: Path to folder where results will be saved
+        schema_path: Path to extraction schema file
+        config_path: Path to config file
+        file_extensions: List of file extensions to process (e.g., ['.txt', '.pdf'])
+    
+    Returns:
+        Dictionary with processing summary
+    """
+    if file_extensions is None:
+        file_extensions = ['.txt']  # Default to text files
+    
+    input_path = Path(input_folder)
+    output_path = Path(output_folder)
+    
+    # Create output folder if it doesn't exist
+    output_path.mkdir(parents=True, exist_ok=True)
+    
+    # Validate inputs
+    if not input_path.exists():
+        raise FileNotFoundError(f"Input folder not found: {input_folder}")
+    if not Path(schema_path).exists():
+        raise FileNotFoundError(f"Schema file not found: {schema_path}")
+    if not Path(config_path).exists():
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+    
+    LogUtil.log(LogType.APPLICATION, LogLevel.INFO, f'Starting batch processing from {input_folder}')
+    
+    # Find all files with specified extensions
+    contract_files = []
+    for ext in file_extensions:
+        contract_files.extend(input_path.glob(f"*{ext}"))
+        contract_files.extend(input_path.glob(f"*{ext.upper()}"))
+    
+    # Remove duplicates and sort
+    contract_files = sorted(set(contract_files))
+    
+    if not contract_files:
+        LogUtil.log(LogType.APPLICATION, LogLevel.WARNING, f"No files found with extensions: {file_extensions}")
+        return {"processed_files": 0, "successful": 0, "failed": 0}
+    
+    LogUtil.log(LogType.APPLICATION, LogLevel.INFO, f'Found {len(contract_files)} files to process')
+    
+    # Process each file
+    results_summary = {
+        "processed_files": 0,
+        "successful": 0,
+        "failed": 0,
+        "files": []
+    }
+    
+    for i, contract_file in enumerate(contract_files, 1):
+        LogUtil.log(LogType.APPLICATION, LogLevel.INFO, f'Processing file {i}/{len(contract_files)}: {contract_file.name}')
+        
+        try:
+            # Extract data from current file
+            result = extract_single_file(contract_file, schema_path, config_path, manifest_path)
+            
+            # Determine output filename
+            output_filename = f"{contract_file.stem}_extracted.json"
+            output_filepath = output_path / output_filename
+            
+            # Save result to file
+            with open(output_filepath, 'w', encoding='utf-8') as f:
+                if isinstance(result, dict):
+                    json.dump(result, f, indent=2, ensure_ascii=False)
+                else:
+                    f.write(str(result))
+            
+            # Update summary
+            results_summary["processed_files"] += 1
+            file_result = {
+                "input_file": str(contract_file),
+                "output_file": str(output_filepath),
+                "status": result.get("_metadata", {}).get("status", "unknown")
+            }
+            
+            if file_result["status"] == "success":
+                results_summary["successful"] += 1
             else:
-                delta_delete_names_df = spark.createDataFrame([], src_df.select("file_name").schema)
+                results_summary["failed"] += 1
+                file_result["error"] = result.get("error", "Unknown error")
+            
+            results_summary["files"].append(file_result)
+            
+            LogUtil.log(LogType.APPLICATION, LogLevel.INFO, f'Successfully processed: {contract_file.name}')
+            
+        except Exception as e:
+            LogUtil.log(LogType.APPLICATION, LogLevel.ERROR, f"Failed to process {contract_file.name}: {str(e)}")
+            results_summary["processed_files"] += 1
+            results_summary["failed"] += 1
+            results_summary["files"].append({
+                "input_file": str(contract_file),
+                "status": "failed",
+                "error": str(e)
+            })
+    
+    # Save summary report
+    summary_file = output_path / "processing_summary.json"
+    with open(summary_file, 'w', encoding='utf-8') as f:
+        json.dump(results_summary, f, indent=2, ensure_ascii=False)
+    
+    LogUtil.log(LogType.APPLICATION, LogLevel.INFO, 
+               f'Batch processing completed. Success: {results_summary["successful"]}, '
+               f'Failed: {results_summary["failed"]}, Total: {results_summary["processed_files"]}')
+    
+    return results_summary
 
-            delta_append_df = same_name_new.unionByName(brand_new)
-            if not _df_is_empty(delta_append_df):
-                delta_append_df.write.format("delta").mode("append").saveAsTable(bronze_table_name)
-        else:
-            raise ValueError(f"Unsupported mode: {mode}")
-
-    LogUtil.log(LogType.TRANSACTION, LogLevel.INFO, f"Bronze delta computed. mode={mode}")
-    walltime = round(time.time() - start_time, 2)
-    with mlflow.start_run(run_id=run_id):
-        mlflow.log_param("bronze_table_name", bronze_table_name)
-        mlflow.log_param("bronze_mode", mode)
-        mlflow.log_metric("bronze_walltime_seconds", walltime)
-
-    # 返回给 Silver 的 delta：append（路径+键），delete（仅 file_name）
-    return (
-        delta_append_df.select("input_file", "file_name", "file_hash"),
-        delta_delete_names_df.select("file_name").distinct(),
-    )
-
-
-
-# silver_pdf.py
-import time
-import mlflow
-from pyspark.sql import functions as F
-from RAGaaS.logs.logging_setup import LogUtil, LogType, LogLevel
-from RAGaaS.data_pipeline.medallian_tables.from_files.create_medallian_table import create_silver
-from RAGaaS.data_pipeline.data_reader.pdf_reader import read_pdf_spark
-from RAGaaS.data_pipeline.medallian_tables.from_files.extract_matadata import MetadataExtractor
-
-def _df_is_empty(df):
-    return df is None or df.limit(1).count() == 0
-
-def file_cleaning(silver_df):
-    regular_expression = r".*\/([^\/]+)\/([^\/]+)\.pdf"
-    return (
-        silver_df.withColumn(
-            "document_name",
-            F.concat(
-                F.regexp_replace(F.lower(F.regexp_extract("input_file", regular_expression, 1)), " ", "_"),
-                F.lit("/"),
-                F.regexp_replace(F.lower(F.regexp_extract("input_file", regular_expression, 2)), " ", "_"),
-            ),
+def main():
+    """
+    Example usage and CLI interface
+    """
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Extract information from contract files in a folder')
+    parser.add_argument('--input',default="examples", help='Path to input folder containing contract files')
+    parser.add_argument('--output', default="outputs", help='Path to output folder for results')
+    parser.add_argument('--schema', default="schema\extraction_schema.json",help='Path to extraction schema file')
+    parser.add_argument('--config', default="config\config.yaml",help='Path to config file')
+    parser.add_argument('--manifest', default="manifest\manifest.yml", help='Path to manifest file')
+    parser.add_argument('--extensions', nargs='+', default=['.pdf'], 
+                       help='File extensions to process (e.g., .txt .pdf)')
+    
+    args = parser.parse_args()
+    
+    try:
+        results = extract_from_folder(
+            input_folder=args.input,
+            output_folder=args.output,
+            schema_path=args.schema,
+            config_path=args.config,
+            manifest_path=args.manifest,
+            file_extensions=args.extensions
         )
-        .withColumn("datetime", F.current_timestamp())
-    )
+        
+        print(f"Processing completed:")
+        print(f"  Total files processed: {results['processed_files']}")
+        print(f"  Successful: {results['successful']}")
+        print(f"  Failed: {results['failed']}")
+        print(f"  Results saved to: {args.output}")
+        
+    except Exception as e:
+        LogUtil.log(LogType.APPLICATION, LogLevel.ERROR, f"Batch processing failed: {e}")
+        print(f"Error: {e}")
+        sys.exit(1)
 
-def create(
-    spark,
-    silver_table_name,
-    run_id,
-    delta_append_df,              # 来自 Bronze（含 content）
-    config,
-    manifest_config,
-    mode="append",
-    delta_delete_names_df=None,   # 来自 Bronze（仅 file_name），cold_update 才会传
-):
-    start_time = time.time()
-    create_silver(spark, silver_table_name, config)
+# Keep the original function for backward compatibility
+def extract(contract_path: str | Path, schema_path: str | Path, config_path: str | Path, manifest_path) -> Dict[str, Any]:
+    """
+    Original single-file extraction function for backward compatibility
+    """
+    return extract_single_file(contract_path, schema_path, config_path, manifest_path)
 
-    table_exists = spark.catalog.tableExists(silver_table_name)
-
-    # 1) 删除（仅 cold_update 有值）
-    if delta_delete_names_df is not None and not _df_is_empty(delta_delete_names_df) and table_exists:
-        delta_delete_names_df.select("file_name").distinct().createOrReplaceTempView("_silver_to_delete_names")
-        spark.sql(f"""
-            DELETE FROM {silver_table_name}
-            WHERE file_name IN (SELECT file_name FROM _silver_to_delete_names)
-        """)
-        LogUtil.log(LogType.TRANSACTION, LogLevel.INFO, "Silver delete executed.")
-
-    # 2) 追加（解析 PDF）
-    if _df_is_empty(delta_append_df):
-        LogUtil.log(LogType.TRANSACTION, LogLevel.INFO, "Silver append empty.")
-        silver_out = None
-    else:
-        # 逐行调用 UDF（列向量化）：read_pdf_spark("content") -> array<struct<key,value>>
-        df_parsed = delta_append_df.select(
-            F.col("input_file"),
-            F.col("file_name"),
-            F.col("file_hash"),
-            read_pdf_spark("content").alias("parsed_pdf_pages"),
-        )
-
-        silver_df = (
-            df_parsed
-            .select("*", F.explode("parsed_pdf_pages"))
-            .withColumnRenamed("key", "page_nr")
-            .withColumnRenamed("value", "page_content")
-            .drop("parsed_pdf_pages")
-        )
-
-        # 可选：抽取元数据
-        if manifest_config.get("extract_metadata"):
-            metadata_extractor = MetadataExtractor(manifest_config)
-            metadata_df = metadata_extractor.create_metadata_dataframe(spark, silver_df)
-            if metadata_extractor.fields:
-                silver_df = silver_df.join(metadata_df, ["input_file", "page_nr"], "left")
-
-        silver_df = file_cleaning(silver_df)
-
-        (silver_df.write
-            .format("delta")
-            .mode("append")
-            .option("mergeSchema", "true")
-            .saveAsTable(silver_table_name))
-
-        LogUtil.log(LogType.TRANSACTION, LogLevel.INFO, "Silver append executed.")
-        silver_out = silver_df
-
-    walltime = round(time.time() - start_time, 2)
-    with mlflow.start_run(run_id=run_id):
-        mlflow.log_param("silver_table_name", silver_table_name)
-        mlflow.log_param("silver_mode", mode)
-        mlflow.log_metric("silver_walltime_seconds", walltime)
-
-    return silver_out
-
-
-
-# gold_pdf.py
-import time
-import mlflow
-from pyspark.sql import functions as F
-from RAGaaS.logs.logging_setup import LogUtil, LogType, LogLevel
-from RAGaaS.data_pipeline.medallian_tables.from_files.create_medallian_table import create_gold
-from RAGaaS.data_pipeline.chunking.chunking_methods import (
-    recursive_character_split,
-    fixed_size_split,
-    paragraph_split,
-    sentence_split,
-    token_split,
-    identity_chunk_udf,
-)
-
-def _df_is_empty(df):
-    return df is None or df.limit(1).count() == 0
-
-CHUNK_STRATEGY_MAP = {
-    "recursive_character_split": recursive_character_split,
-    "fixed_size_split": fixed_size_split,
-    "sentence_split": sentence_split,
-    "paragraph_split": paragraph_split,
-    "token_split": token_split,
-    "identity_chunk_udf": identity_chunk_udf,
-}
-
-def _chunk_df(df, chunk_col, chunking_strategy, max_tokens, chunk_overlap):
-    fn = CHUNK_STRATEGY_MAP.get(chunking_strategy)
-    if fn is None:
-        raise ValueError(f"Unsupported chunking strategy: {chunking_strategy}")
-
-    # 统一在这里 explode，避免依赖 UDF 内部是否 explode
-    page_chunks = fn(
-        col=F.col(chunk_col),
-        chunk_size=max_tokens,
-        chunk_overlap=chunk_overlap,
-        explode=False,
-    )
-    return (
-        df.withColumn("page_chunks", page_chunks)
-          .withColumn("page_chunk", F.explode_outer("page_chunks"))
-          .withColumn("content_chunk", F.col("page_chunk.content_chunk"))
-          .withColumn("chunk_index", F.col("page_chunk.idx"))
-          .withColumn("datetime", F.current_timestamp())
-          .drop("page_chunks", "page_chunk")
-    )
-
-def create(
-    spark,
-    gold_table_name,
-    run_id,
-    silver_delta_append_df,        # 仅本次新增/更新的银层数据（须含 file_name, page_content）
-    config,
-    mode="append",
-    delta_delete_names_df=None,    # 来自 Bronze（仅 file_name）
-    chunk_col="page_content",
-    chunk_flag=True,
-    chunking_strategy="recursive_character_split",
-    max_tokens=512,
-    chunk_overlap=50,
-):
-    start_time = time.time()
-    create_gold(spark, gold_table_name, config)
-
-    table_exists = spark.catalog.tableExists(gold_table_name)
-
-    # 1) 删除（仅 cold_update 有值）
-    if delta_delete_names_df is not None and not _df_is_empty(delta_delete_names_df) and table_exists:
-        delta_delete_names_df.select("file_name").distinct().createOrReplaceTempView("_gold_to_delete_names")
-        spark.sql(f"""
-            DELETE FROM {gold_table_name}
-            WHERE file_name IN (SELECT file_name FROM _gold_to_delete_names)
-        """)
-        LogUtil.log(LogType.TRANSACTION, LogLevel.INFO, "Gold delete executed.")
-
-    # 2) 追加（针对 silver delta）
-    if _df_is_empty(silver_delta_append_df):
-        LogUtil.log(LogType.TRANSACTION, LogLevel.INFO, "Gold append empty.")
-        gold_out = None
-    else:
-        df_to_write = (
-            _chunk_df(silver_delta_append_df, chunk_col, chunking_strategy, max_tokens, chunk_overlap)
-            if chunk_flag else
-            silver_delta_append_df.withColumn("datetime", F.current_timestamp())
-        )
-
-        (df_to_write.write
-            .format("delta")
-            .option("mergeSchema", "true")
-            .mode("append")
-            .saveAsTable(gold_table_name))
-
-        # 启用 CDF，若已启用不会报错
-        spark.sql(f"ALTER TABLE {gold_table_name} SET TBLPROPERTIES (delta.enableChangeDataFeed = true)")
-        LogUtil.log(LogType.TRANSACTION, LogLevel.INFO, "Gold append executed.")
-        gold_out = df_to_write
-
-    walltime = round(time.time() - start_time, 2)
-    with mlflow.start_run(run_id=run_id):
-        mlflow.log_param("gold_table_name", gold_table_name)
-        mlflow.log_param("gold_mode", mode)
-        mlflow.log_param("chunk_flag", chunk_flag)
-        mlflow.log_param("chunking_strategy", chunking_strategy if chunk_flag else "disabled")
-        mlflow.log_metric("gold_walltime_seconds", walltime)
-
-    return gold_out
+if __name__ == "__main__":
+    main()
