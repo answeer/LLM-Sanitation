@@ -14,9 +14,9 @@ from logs.logging_setup import LogUtil, LogType, LogLevel
 import pandas as pd
 
 # Hard-coded paths for other necessary files
-SCHEMA_PATH = "schema/extraction_schema.json" # Adjust the path as needed
-CONFIG_PATH = "config/config.yaml" # Adjust the path as needed
-MANIFEST_PATH = "manifest/manifest.yml" # Adjust the path as needed
+SCHEMA_PATH = "schema/extraction_schema.json"  # Adjust the path as needed
+CONFIG_PATH = "config/config.yaml"  # Adjust the path as needed
+MANIFEST_PATH = "manifest/manifest.yml"  # Adjust the path as needed
 
 # Function for extracting information from a single file
 def extract_single_file(contract_path, schema_path, config_path, manifest_path) -> Dict[str, Any]:
@@ -145,7 +145,7 @@ def run_streamlit_app():
                     manifest_path=MANIFEST_PATH_
                 )
 
-                # Display results in table format
+                # Display results in a transposed table format
                 if "error" in result:
                     st.error(f"Error: {result['error']}")
                 else:
@@ -153,6 +153,7 @@ def run_streamlit_app():
                     # Convert JSON result to pandas DataFrame for table display
                     if isinstance(result, dict):
                         result_df = pd.json_normalize(result)
+                        result_df = result_df.transpose()  # Transpose to make the columns as rows
                         st.dataframe(result_df)  # Display result as a table
 
 if __name__ == "__main__":
