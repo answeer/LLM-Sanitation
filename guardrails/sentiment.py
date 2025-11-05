@@ -1,18 +1,18 @@
 import streamlit as st
-import json
+import pandas as pd
 
-data = {
-    "name": "Alice",
-    "age": 30,
-    "address": {
-        "street": "123 Main St",
-        "city": "New York"
-    },
-    "hobbies": ["Reading", "Hiking", "Traveling"]
+# 示例JSON数据
+json_data = {
+    "contacts": [
+        {"type": "email", "value": "alice@example.com"},
+        {"type": "phone", "value": "+123456789"}
+    ]
 }
 
-# 将 JSON 数据转换为格式化的字符串
-json_data = json.dumps(data, indent=4)
+# 将 JSON 数据转换为 DataFrame
+df = pd.DataFrame(json_data["contacts"])
 
-# 自定义 HTML 样式
-st.markdown(f"<pre style='color: #4CAF50; font-family: Consolas, monospace;'>{json_data}</pre>", unsafe_allow_html=True)
+# 显示 DataFrame
+edited_df = st.dataframe(df)
+
+# 在用户编辑后可以进行处理
