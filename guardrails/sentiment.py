@@ -86,6 +86,25 @@ def apply_table_styling():
     </style>
     """, unsafe_allow_html=True)
 
+# Function to display and edit the manifest in a table
+def display_and_edit_manifest(manifest):
+    # Convert manifest to DataFrame
+    manifest_df = pd.json_normalize(manifest, sep='_')
+    
+    # Apply styling for text wrapping
+    apply_table_styling()
+
+    # Show editable DataFrame
+    edited_manifest_df = st.dataframe(manifest_df)  # Display the DataFrame in a table
+
+    # Editable inputs for each cell in the DataFrame (convert back to dictionary)
+    for col in manifest_df.columns:
+        for idx, row in manifest_df.iterrows():
+            new_value = st.text_input(f"Edit {col} - Row {idx+1}", value=row[col] if isinstance(row[col], str) else str(row[col]))
+            manifest_df.at[idx, col] = new_value
+
+    return manifest_df
+
 # Streamlit app
 def run_streamlit_app():
     st.set_page_config(page_title="Contract Information Extraction", layout="wide")
@@ -174,6 +193,17 @@ def run_streamlit_app():
                         result_df = pd.json_normalize(result)
                         result_df = result_df.transpose()  # Transpose to make the columns as rows
                         st.dataframe(result_df)  # Display result as a table
+
+                # Edit and display manifest in table format
+                st.write("Edit Manifest:")
+                updated_manifest_df = display_and_edit_manifest(manifest)
+                
+                # Save edited manifest to a new file
+                if st.button("Save Edited Manifest"):
+                    updated_manifest = updated_manifest_df.to_dict(orient='records')
+                    with open('edited_manifest.json', 'w') as f:
+                        json.dump(updated_manifest, f, indent=4)
+                    st.success("Edited manifest saved as 'edited_manifest.json'.")
 
 if __name__ == "__main__":
     run_streamlit_app()
