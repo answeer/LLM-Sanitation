@@ -159,3 +159,61 @@ def run_streamlit_app():
 
 if __name__ == "__main__":
     run_streamlit_app()
+
+
+
+
+{
+  "contract id": "string",
+  "Contract Title": "string",
+  "Contract Reference": "string",
+  "msa linked contracts": "list",
+  "parties": "list",
+  "parties Address": "list",
+  "effective date": "string",
+  "Expiration Date": "string",
+  "Term Type": "string",
+  "Goods/Services (Spend Category)": "string",
+  "Total Contract Value": "string",
+  "Governing Law": "string",
+  "Notice Period": "string",
+  "signature available":"boolean",
+  "signature type": "string",
+  "Bank Signatory Name": "string",
+  "Bank Signatory Position": "string",
+  "Bank Signatory Date": "string",
+  "Supplier signatory Name": "string",
+  "Supplier signatory position": "string",
+  "Supplier Signatory Date": "string",
+  "mandatory clause missing": "boolean",
+  "duplicate flag": "boolean",
+  "anomaly flag": "boolean",
+  "Contract Summary": "string",
+  "validation summary": "string",
+  "clause_analysis_results": {
+    "force_majeure": {
+      "is_present": "boolean",
+      "coverage_rating": "number",
+      "verbatim_coverage_summary": "string"
+    },
+    "termination_rights": {
+      "convenience_present": "boolean",
+      "notice_period_days": "number",
+      "cause_breach_defined": "boolean"
+    },
+    "indemnification_liability_limits": {
+      "is_mutual": "boolean",
+      "limit_cap_extracted": "string",
+      "carve_outs_acceptable": "boolean"
+    },
+    "sla_performance_metrics": {
+      "is_present": "boolean",
+      "has_remedies_or_credits": "boolean",
+      "key_metrics_summary": "string"
+    }
+  },
+  "validation_summary_output": {
+    "status": "string",
+    "notes": "string"
+  }
+}
