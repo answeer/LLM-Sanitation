@@ -29,13 +29,10 @@ def extract_single_file(contract_path, schema_path, config_path, manifest_path) 
         manifest = load_manifest(str(manifest_path))
         manifest_instruction = manifest_to_human_instructions(manifest)
 
-        manifest = load_manifest(str(manifest_path))
-        manifest_instruction = manifest_to_human_instructions(manifest)
-
         # Display manifest instructions in a table
         if manifest_instruction:
             st.write("Manifest Details:")
-            st.json(manifest, expanded= False, width=700)
+            st.json(manifest, expanded=False, width=700)
         
         # Read contract content
         contract_content = read_pdf(contract_path)
@@ -78,19 +75,18 @@ def run_streamlit_app():
     st.set_page_config(page_title="Contract Information Extraction", layout="wide")
     st.title("Contract Information Extraction")
     st.write("Upload a PDF contract to extract information.")
+    
     # File upload for PDF
     uploaded_file = st.file_uploader("Choose a PDF file", type=["pdf"])
 
-
     st.write("Upload the manifest for the document type.")
-    # File upload for PDF
+    # File upload for the manifest
     uploaded_manifest_file = st.file_uploader("Choose the manifest file", type=["json"])
-
 
     if uploaded_file is not None:
         # Display the uploaded file name
         st.write(f"Uploaded file: {uploaded_file.name}")
-        col1, col2 = st.columns([1,1],gap='large')
+        col1, col2 = st.columns([1, 1], gap='large')
 
         with col1:
             pdf_bytes = uploaded_file.read()
@@ -112,7 +108,7 @@ def run_streamlit_app():
                         max_output_tokens=config.max_output_tokens
                     )
                     contract_content = read_pdf("uploaded_contract.pdf")
-                    question_prompt = f"{user_question}\n\n{contract_content}. Answer only questions that are relavent to the given content and answer only based on valid facts in the contract else say 'I don't know'."
+                    question_prompt = f"{user_question}\n\n{contract_content}. Answer only questions that are relevant to the given content and answer only based on valid facts in the contract else say 'I don't know'."
                     answer = client.chat(question_prompt)
 
                     # Display the answer
@@ -123,9 +119,7 @@ def run_streamlit_app():
             
             # Button to trigger extraction
             if st.button("Start Extraction"):
-                # Save uploaded file to a temporary location
-                
-            
+                # Save uploaded manifest file if available
                 if uploaded_manifest_file is not None:
                     with open("uploaded_manifest.json", "wb") as f:
                         f.write(uploaded_manifest_file.getbuffer())
@@ -136,11 +130,10 @@ def run_streamlit_app():
                 print(manifest)
                 manifest_instruction = manifest_to_human_instructions(manifest)
 
-                # Display manifest instructions in a table
+                # Display manifest instructions
                 if manifest_instruction:
                     st.write("Manifest Instructions:")
                     
-
                 # Display a processing message
                 st.write("Processing file, please wait...")
                         
@@ -152,15 +145,15 @@ def run_streamlit_app():
                     manifest_path=MANIFEST_PATH_
                 )
 
-                # Display results
+                # Display results in table format
                 if "error" in result:
                     st.error(f"Error: {result['error']}")
                 else:
                     st.success("Extraction successful!")
-                    st.json(result)
+                    # Convert JSON result to pandas DataFrame for table display
+                    if isinstance(result, dict):
+                        result_df = pd.json_normalize(result)
+                        st.dataframe(result_df)  # Display result as a table
 
-                
-                
 if __name__ == "__main__":
     run_streamlit_app()
-
