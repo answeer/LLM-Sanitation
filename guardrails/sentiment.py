@@ -204,7 +204,8 @@
 }
 
 
-{
+{ 
+"madatory_key":{
   "contract id": "string",
   "Contract Title": "string",
   "Contract Reference": "string",
@@ -227,7 +228,8 @@
   "Supplier signatory position": "string",
   "Supplier Signatory Date": "string",
   "mandatory clause missing": "boolean",
-  "Contract Summary": "string",
+  "Contract Summary": "string"
+},
   "clause_analysis_results": {
     "force_majeure": {
       "is_present": "boolean",
