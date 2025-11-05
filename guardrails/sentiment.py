@@ -70,6 +70,22 @@ def extract_single_file(contract_path, schema_path, config_path, manifest_path) 
             }
         }
 
+# Function to apply CSS styles for wrapping text
+def apply_table_styling():
+    st.markdown("""
+    <style>
+    .streamlit-table th, .streamlit-table td {
+        word-wrap: break-word;
+        white-space: normal;
+        max-width: 300px; /* Adjust column width */
+    }
+    .streamlit-table td {
+        text-overflow: ellipsis;
+        overflow: hidden;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
 # Streamlit app
 def run_streamlit_app():
     st.set_page_config(page_title="Contract Information Extraction", layout="wide")
@@ -144,6 +160,9 @@ def run_streamlit_app():
                     config_path=CONFIG_PATH, 
                     manifest_path=MANIFEST_PATH_
                 )
+
+                # Apply CSS styling to table
+                apply_table_styling()
 
                 # Display results in a transposed table format
                 if "error" in result:
