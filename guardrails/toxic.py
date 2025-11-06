@@ -1,155 +1,146 @@
-import json
 import csv
+import json
 import os
-import glob
-from pathlib import Path
 
-def json_to_csv(json_folder_path, output_csv_path):
+def csv_row_to_json(csv_file_path, contract_name, output_json_path=None):
     """
-    将文件夹中的JSON文件转换为CSV文件，每个文件对应一行
+    从CSV文件中读取指定合同名称的行，并转换回JSON格式
     
     参数:
-    json_folder_path: 包含JSON文件的文件夹路径
-    output_csv_path: 输出的CSV文件路径
+    csv_file_path: CSV文件路径
+    contract_name: 要查找的合同名称
+    output_json_path: 输出的JSON文件路径（可选）
+    
+    返回:
+    转换后的JSON数据字典
     """
     
-    # 获取所有JSON文件
-    json_files = glob.glob(os.path.join(json_folder_path, "*.json"))
+    if not os.path.exists(csv_file_path):
+        print(f"CSV文件不存在: {csv_file_path}")
+        return None
     
-    if not json_files:
-        print(f"在文件夹 {json_folder_path} 中没有找到JSON文件")
-        return
-    
-    # 为了确定所有可能的条款名称，先扫描所有文件
-    all_clause_names = set()
-    for json_file in json_files:
-        try:
-            with open(json_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            clause_analysis = data.get("clause_analysis_results", {})
-            all_clause_names.update(clause_analysis.keys())
-        except Exception as e:
-            print(f"扫描文件 {json_file} 时出错: {str(e)}")
-    
-    # 准备CSV文件的列头
-    headers = [
-        "Contract Name",
-        "Effective Date", "Expiration Date", "Governing Law", "Total Contract Value",
-        "Contract Id", "Contract Title", "Contract Reference", "Term Type",
-        "Goods Services Spend Category", "Notice Period", "Signature Available",
-        "Signature Type", "Bank Signatory Name", "Bank Signatory Position", "Bank Signatory Date",
-        "Supplier Signatory Name", "Supplier Signatory Position", "Supplier Signatory Date",
-        "Mandatory Clause Missing", "Contract Summary",
-        "Validation Status", "Validation Notes"
-    ]
-    
-    # 为每个条款添加6个字段
-    for clause_name in sorted(all_clause_names):
-        headers.extend([
-            f"{clause_name} - Priority",
-            f"{clause_name} - Coverage Status", 
-            f"{clause_name} - Risk Level",
-            f"{clause_name} - Confidence",
-            f"{clause_name} - Gap Analysis and Recommendations"
-        ])
-    
-    # 打开CSV文件准备写入
-    with open(output_csv_path, 'w', newline='', encoding='utf-8') as csvfile:
-        writer = csv.writer(csvfile)
+    # 读取CSV文件
+    with open(csv_file_path, 'r', encoding='utf-8') as csvfile:
+        reader = csv.DictReader(csvfile)
         
-        # 写入表头
-        writer.writerow(headers)
+        # 查找指定合同名称的行
+        target_row = None
+        for row in reader:
+            if row['Contract Name'] == contract_name:
+                target_row = row
+                break
         
-        # 处理每个JSON文件
-        for json_file in json_files:
-            try:
-                with open(json_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                
-                # 获取合同名称（文件名去掉.json后缀）
-                contract_name = Path(json_file).stem
-                
-                # 提取mandatory_key部分的基本信息
-                mandatory = data.get("mandatory_key", {})
-                row_data = [
-                    contract_name,
-                    mandatory.get("Effective Date", ""),
-                    mandatory.get("Expiration Date", ""),
-                    mandatory.get("Governing Law", ""),
-                    mandatory.get("Total Contract Value", ""),
-                    mandatory.get("Contract Id", ""),
-                    mandatory.get("Contract Title", ""),
-                    mandatory.get("Contract Reference", ""),
-                    mandatory.get("Term Type", ""),
-                    mandatory.get("Goods Services Spend Category", ""),
-                    mandatory.get("Notice Period", ""),
-                    mandatory.get("Signature Available", ""),
-                    mandatory.get("Signature Type", ""),
-                    mandatory.get("Bank Signatory Name", ""),
-                    mandatory.get("Bank Signatory Position", ""),
-                    mandatory.get("Bank Signatory Date", ""),
-                    mandatory.get("Supplier Signatory Name", ""),
-                    mandatory.get("Supplier Signatory Position", ""),
-                    mandatory.get("Supplier Signatory Date", ""),
-                    mandatory.get("Mandatory Clause Missing", ""),
-                    mandatory.get("Contract Summary", "")
-                ]
-                
-                # 提取validation_summary_output
-                validation = data.get("validation_summary_output", {})
-                row_data.extend([
-                    validation.get("status", ""),
-                    validation.get("notes", "")
-                ])
-                
-                # 提取clause_analysis_results并添加到行中
-                clause_analysis = data.get("clause_analysis_results", {})
-                
-                # 为每个可能的条款名称添加数据
-                for clause_name in sorted(all_clause_names):
-                    if clause_name in clause_analysis:
-                        clause_data = clause_analysis[clause_name]
-                        row_data.extend([
-                            clause_data.get("Priority", ""),
-                            clause_data.get("Coverage_status", ""),
-                            clause_data.get("Risk_level", ""),
-                            clause_data.get("Confidence", ""),
-                            clause_data.get("Gap Analysis and Recommendations", "")
-                        ])
-                    else:
-                        # 如果该合同没有这个条款，添加空值
-                        row_data.extend(["", "", "", "", ""])
-                
-                # 写入完整的一行
-                writer.writerow(row_data)
-                print(f"成功处理文件: {json_file}")
-                
-            except Exception as e:
-                print(f"处理文件 {json_file} 时出错: {str(e)}")
-    
-    print(f"转换完成！CSV文件已保存到: {output_csv_path}")
-    print(f"总共处理了 {len(json_files)} 个文件")
-    print(f"发现了 {len(all_clause_names)} 种不同的条款类型")
+        if not target_row:
+            print(f"未找到合同名称 '{contract_name}' 在CSV文件中")
+            return None
+        
+        # 构建JSON结构
+        json_data = {}
+        
+        # 1. 构建mandatory_key部分
+        mandatory_key = {
+            "Effective Date": target_row.get("Effective Date", ""),
+            "Expiration Date": target_row.get("Expiration Date", ""),
+            "Governing Law": target_row.get("Governing Law", ""),
+            "Total Contract Value": target_row.get("Total Contract Value", ""),
+            "Contract Id": target_row.get("Contract Id", ""),
+            "Contract Title": target_row.get("Contract Title", ""),
+            "Contract Reference": target_row.get("Contract Reference", ""),
+            "Msa Linked Contracts": [],
+            "Parties": [],  # 注意：原CSV中没有这些字段，需要根据实际情况调整
+            "Parties Address": [],  # 注意：原CSV中没有这些字段，需要根据实际情况调整
+            "Term Type": target_row.get("Term Type", ""),
+            "Goods Services Spend Category": target_row.get("Goods Services Spend Category", ""),
+            "Notice Period": target_row.get("Notice Period", ""),
+            "Signature Available": target_row.get("Signature Available", ""),
+            "Signature Type": target_row.get("Signature Type", ""),
+            "Bank Signatory Name": target_row.get("Bank Signatory Name", ""),
+            "Bank Signatory Position": target_row.get("Bank Signatory Position", ""),
+            "Bank Signatory Date": target_row.get("Bank Signatory Date", ""),
+            "Supplier Signatory Name": target_row.get("Supplier Signatory Name", ""),
+            "Supplier Signatory Position": target_row.get("Supplier Signatory Position", ""),
+            "Supplier Signatory Date": target_row.get("Supplier Signatory Date", ""),
+            "Mandatory Clause Missing": target_row.get("Mandatory Clause Missing", ""),
+            "Contract Summary": target_row.get("Contract Summary", "")
+        }
+        
+        # 处理布尔值和None值
+        for key in ["Signature Available", "Mandatory Clause Missing"]:
+            if mandatory_key[key] == "True":
+                mandatory_key[key] = True
+            elif mandatory_key[key] == "False":
+                mandatory_key[key] = False
+            elif mandatory_key[key] == "":
+                mandatory_key[key] = None
+        
+        if mandatory_key["Total Contract Value"] == "":
+            mandatory_key["Total Contract Value"] = None
+        
+        json_data["mandatory_key"] = mandatory_key
+        
+        # 2. 构建clause_analysis_results部分
+        clause_analysis_results = {}
+        
+        # 获取所有列名
+        all_columns = list(target_row.keys())
+        
+        # 找出所有条款相关的列
+        clause_columns = {}
+        for col in all_columns:
+            if " - " in col:
+                clause_name, field = col.split(" - ", 1)
+                if clause_name not in clause_columns:
+                    clause_columns[clause_name] = {}
+                clause_columns[clause_name][field] = target_row[col]
+        
+        # 构建每个条款的数据
+        for clause_name, fields in clause_columns.items():
+            if any(fields.values()):  # 只有当至少有一个字段有值时
+                clause_data = {
+                    "Priority": fields.get("Priority", ""),
+                    "Coverage_status": fields.get("Coverage Status", ""),
+                    "Risk_level": fields.get("Risk Level", ""),
+                    "Confidence": fields.get("Confidence", ""),
+                    "Gap Analysis and Recommendations": fields.get("Gap Analysis and Recommendations", "")
+                }
+                clause_analysis_results[clause_name] = clause_data
+        
+        json_data["clause_analysis_results"] = clause_analysis_results
+        
+        # 3. 构建validation_summary_output部分
+        validation_summary_output = {
+            "status": target_row.get("Validation Status", ""),
+            "notes": target_row.get("Validation Notes", "")
+        }
+        json_data["validation_summary_output"] = validation_summary_output
+        
+        # 4. 输出JSON文件（如果指定了输出路径）
+        if output_json_path:
+            with open(output_json_path, 'w', encoding='utf-8') as jsonfile:
+                json.dump(json_data, jsonfile, ensure_ascii=False, indent=2)
+            print(f"JSON文件已保存到: {output_json_path}")
+        
+        return json_data
 
 def main():
-    # 配置路径
-    json_folder = input("请输入包含JSON文件的文件夹路径: ").strip()
+    """
+    主函数，用于测试csv_row_to_json函数
+    """
+    csv_file = input("请输入CSV文件路径: ").strip()
+    contract_name = input("请输入要查找的合同名称: ").strip()
+    output_json = input("请输入输出的JSON文件路径（可选）: ").strip()
     
-    if not json_folder:
-        json_folder = "."  # 默认当前文件夹
+    if not output_json:
+        output_json = None
     
-    output_csv = input("请输入输出的CSV文件路径 (默认为 contracts_analysis.csv): ").strip()
+    result = csv_row_to_json(csv_file, contract_name, output_json)
     
-    # 如果用户没有输入输出文件路径，使用默认值
-    if not output_csv:
-        output_csv = "contracts_analysis.csv"
-    
-    # 确保输出文件以.csv结尾
-    if not output_csv.endswith('.csv'):
-        output_csv += '.csv'
-    
-    # 执行转换
-    json_to_csv(json_folder, output_csv)
+    if result:
+        print("转换成功！")
+        print("JSON数据结构:")
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        print("转换失败！")
 
 if __name__ == "__main__":
     main()
