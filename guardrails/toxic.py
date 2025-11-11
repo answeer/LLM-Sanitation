@@ -1,146 +1,105 @@
-import csv
-import json
-import os
+import time
+import mlflow
+import pyspark.sql.functions as func
+from RAGaaS.logs.logging_setup import LogUtil, LogType, LogLevel
+from RAGaaS.data_pipeline.chunking.chunking_methods import (
+    recursive_character_split,
+    fixed_size_split,
+    paragraph_split,
+    sentence_split,
+    token_split,
+    identity_chunk_udf,
+)
 
-def csv_row_to_json(csv_file_path, contract_name, output_json_path=None):
-    """
-    从CSV文件中读取指定合同名称的行，并转换回JSON格式
-    
-    参数:
-    csv_file_path: CSV文件路径
-    contract_name: 要查找的合同名称
-    output_json_path: 输出的JSON文件路径（可选）
-    
-    返回:
-    转换后的JSON数据字典
-    """
-    
-    if not os.path.exists(csv_file_path):
-        print(f"CSV文件不存在: {csv_file_path}")
-        return None
-    
-    # 读取CSV文件
-    with open(csv_file_path, 'r', encoding='utf-8') as csvfile:
-        reader = csv.DictReader(csvfile)
-        
-        # 查找指定合同名称的行
-        target_row = None
-        for row in reader:
-            if row['Contract Name'] == contract_name:
-                target_row = row
-                break
-        
-        if not target_row:
-            print(f"未找到合同名称 '{contract_name}' 在CSV文件中")
-            return None
-        
-        # 构建JSON结构
-        json_data = {}
-        
-        # 1. 构建mandatory_key部分
-        mandatory_key = {
-            "Effective Date": target_row.get("Effective Date", ""),
-            "Expiration Date": target_row.get("Expiration Date", ""),
-            "Governing Law": target_row.get("Governing Law", ""),
-            "Total Contract Value": target_row.get("Total Contract Value", ""),
-            "Contract Id": target_row.get("Contract Id", ""),
-            "Contract Title": target_row.get("Contract Title", ""),
-            "Contract Reference": target_row.get("Contract Reference", ""),
-            "Msa Linked Contracts": [],
-            "Parties": [],  # 注意：原CSV中没有这些字段，需要根据实际情况调整
-            "Parties Address": [],  # 注意：原CSV中没有这些字段，需要根据实际情况调整
-            "Term Type": target_row.get("Term Type", ""),
-            "Goods Services Spend Category": target_row.get("Goods Services Spend Category", ""),
-            "Notice Period": target_row.get("Notice Period", ""),
-            "Signature Available": target_row.get("Signature Available", ""),
-            "Signature Type": target_row.get("Signature Type", ""),
-            "Bank Signatory Name": target_row.get("Bank Signatory Name", ""),
-            "Bank Signatory Position": target_row.get("Bank Signatory Position", ""),
-            "Bank Signatory Date": target_row.get("Bank Signatory Date", ""),
-            "Supplier Signatory Name": target_row.get("Supplier Signatory Name", ""),
-            "Supplier Signatory Position": target_row.get("Supplier Signatory Position", ""),
-            "Supplier Signatory Date": target_row.get("Supplier Signatory Date", ""),
-            "Mandatory Clause Missing": target_row.get("Mandatory Clause Missing", ""),
-            "Contract Summary": target_row.get("Contract Summary", "")
-        }
-        
-        # 处理布尔值和None值
-        for key in ["Signature Available", "Mandatory Clause Missing"]:
-            if mandatory_key[key] == "True":
-                mandatory_key[key] = True
-            elif mandatory_key[key] == "False":
-                mandatory_key[key] = False
-            elif mandatory_key[key] == "":
-                mandatory_key[key] = None
-        
-        if mandatory_key["Total Contract Value"] == "":
-            mandatory_key["Total Contract Value"] = None
-        
-        json_data["mandatory_key"] = mandatory_key
-        
-        # 2. 构建clause_analysis_results部分
-        clause_analysis_results = {}
-        
-        # 获取所有列名
-        all_columns = list(target_row.keys())
-        
-        # 找出所有条款相关的列
-        clause_columns = {}
-        for col in all_columns:
-            if " - " in col:
-                clause_name, field = col.split(" - ", 1)
-                if clause_name not in clause_columns:
-                    clause_columns[clause_name] = {}
-                clause_columns[clause_name][field] = target_row[col]
-        
-        # 构建每个条款的数据
-        for clause_name, fields in clause_columns.items():
-            if any(fields.values()):  # 只有当至少有一个字段有值时
-                clause_data = {
-                    "Priority": fields.get("Priority", ""),
-                    "Coverage_status": fields.get("Coverage Status", ""),
-                    "Risk_level": fields.get("Risk Level", ""),
-                    "Confidence": fields.get("Confidence", ""),
-                    "Gap Analysis and Recommendations": fields.get("Gap Analysis and Recommendations", "")
-                }
-                clause_analysis_results[clause_name] = clause_data
-        
-        json_data["clause_analysis_results"] = clause_analysis_results
-        
-        # 3. 构建validation_summary_output部分
-        validation_summary_output = {
-            "status": target_row.get("Validation Status", ""),
-            "notes": target_row.get("Validation Notes", "")
-        }
-        json_data["validation_summary_output"] = validation_summary_output
-        
-        # 4. 输出JSON文件（如果指定了输出路径）
-        if output_json_path:
-            with open(output_json_path, 'w', encoding='utf-8') as jsonfile:
-                json.dump(json_data, jsonfile, ensure_ascii=False, indent=2)
-            print(f"JSON文件已保存到: {output_json_path}")
-        
-        return json_data
+# Mapping of chunking strategy names to their corresponding functions
+CHUNK_STRATEGY_MAP = {
+    "recursive_character_split": recursive_character_split,
+    "fixed_size_split": fixed_size_split,
+    "sentence_split": sentence_split,
+    "paragraph_split": paragraph_split,
+    "token_split": token_split,
+    "identity_chunk_udf": identity_chunk_udf,
+}
 
-def main():
+
+def create(spark, gold_table_name, run_id, silver_delta_append_df, delta_delete_names_df, config, chunk_col, chunk_flag, mode="cold_update",**kwargs):
     """
-    主函数，用于测试csv_row_to_json函数
+    Execute gold layer processing with chunking on silver delta changes.
+    
+    Processes incremental changes from silver layer:
+    - Applies chunking strategies to silver_delta_append_df and writes to gold table
+    - Deletes records based on delta_delete file names
+    - Enables Change Data Feed for the gold table
+    
+    Args:
+        spark: Spark session object
+        gold_table_name: Name of the target gold table
+        run_id: MLflow run ID for tracking
+        silver_delta_append_df: DataFrame containing silver layer changes to process
+        delta_delete_names_df: DataFrame containing files to delete
+        config: Configuration object
+        chunk_col: Column name to apply chunking on
+        chunk_flag: Boolean indicating whether to apply chunking
+        mode: Operation mode (default: "append")
+        **kwargs: Additional keyword arguments for chunking configuration
+    
+    Returns:
+        Union[DataFrame, None]: DataFrame that was appended to gold table, or None if no append occurred
     """
-    csv_file = input("请输入CSV文件路径: ").strip()
-    contract_name = input("请输入要查找的合同名称: ").strip()
-    output_json = input("请输入输出的JSON文件路径（可选）: ").strip()
-    
-    if not output_json:
-        output_json = None
-    
-    result = csv_row_to_json(csv_file, contract_name, output_json)
-    
-    if result:
-        print("转换成功！")
-        print("JSON数据结构:")
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+    start_time = time.time()
+    table_exists = spark.catalog.tableExists(gold_table_name)
+
+    # Get chunking strategy and corresponding function
+    chunking_strategy = kwargs["chunking_strategy"]
+    chunk_function = CHUNK_STRATEGY_MAP.get(chunking_strategy)
+
+    if chunking_strategy in ["recursive_character_split", "fixed_size_split", "sentence_split", "paragraph_split", "token_split"]:
+        args = {
+            "col": func.col(chunk_col),
+            "chunk_size": kwargs["max_tokens"],
+            "chunk_overlap": kwargs["chunk_overlap"],
+            "explode": True,
+        }
+
     else:
-        print("转换失败！")
+        raise ValueError(f"Unsupported chunking strategy: {chunking_strategy}")
 
-if __name__ == "__main__":
-    main()
+    # 1) Handle deletions (only non-empty in cold update scenarios)
+    if delta_delete_names_df is not None and not delta_delete_names_df.limit(1).count() == 0 and table_exists:
+        delta_delete_names_df.select("input_file").distinct().createOrReplaceTempView("_gold_to_delete_names")
+        spark.sql(f"DELETE FROM {gold_table_name} WHERE input_file IN (SELECT input_file FROM _gold_to_delete_names)")
+        LogUtil.log(LogType.TRANSACTION, LogLevel.INFO, "Gold delete executed.")
+
+    # 2) Handle appends with optional chunking
+    if silver_delta_append_df is None or silver_delta_append_df.limit(1).count() == 0:
+        LogUtil.log(LogType.TRANSACTION, LogLevel.INFO, "Gold append empty.")
+        gold_append_df = None
+    else:
+        if chunk_flag:
+                # Apply chunking strategy and process results
+            gold_append_df = (
+                silver_delta_append_df.withColumn("page_chunks", chunk_function(**args))
+                .withColumn("content_chunk", func.col("page_chunks.content_chunk"))
+                .withColumn("datetime", func.current_timestamp())
+                .drop("page_chunks")
+            )
+        else:
+            # Pass through without chunking
+            gold_append_df = silver_delta_append_df
+        
+        # Write to gold table with schema evolution enabled
+        gold_append_df.write.format("delta").option("mergeSchema", "true").mode("append").saveAsTable(gold_table_name)
+
+        # Enable Change Data Feed for downstream processing
+        spark.sql(f"ALTER TABLE {gold_table_name} SET TBLPROPERTIES (delta.enableChangeDataFeed = true)")
+        LogUtil.log(LogType.TRANSACTION, LogLevel.INFO, "Gold append executed.")
+
+    # Log metrics to MLflow
+    walltime = round(time.time() - start_time, 2)
+    with mlflow.start_run(run_id=run_id):
+        mlflow.log_param("gold_table_name", gold_table_name)
+        mlflow.log_param("gold_mode", mode)
+        mlflow.log_param("chunking_strategy", chunking_strategy)
+        mlflow.log_metric("gold_walltime_seconds", walltime)
+
+    return gold_append_df
