@@ -26,10 +26,15 @@ def display_document_info(data):
     if related_docs:
         related_data = []
         for doc in related_docs:
+            # Format coordinates for display
+            coordinates = doc.get("coordinates", {})
+            coord_str = ", ".join([f"{page}: {coords}" for page, coords in coordinates.items()])
+            
             related_data.append({
                 "Relation Type": doc.get("relation_type", "N/A"),
                 "Document ID Reference": doc.get("document_id_reference", "N/A"),
-                "Confidence": f"{doc.get('confidence', 0)*100:.1f}%" if doc.get('confidence') else "N/A"
+                "Confidence": f"{doc.get('confidence', 0)*100:.1f}%" if doc.get('confidence') else "N/A",
+                "Coordinates": coord_str
             })
         
         related_df = pd.DataFrame(related_data)
@@ -44,11 +49,16 @@ def display_document_info(data):
     if key_values:
         key_data = []
         for item in key_values:
+            # Format coordinates for display
+            coordinates = item.get("coordinates", {})
+            coord_str = ", ".join([f"{page}: {coords}" for page, coords in coordinates.items()])
+            
             key_data.append({
                 "Key": item.get("key", "N/A"),
                 "Value": item.get("value", "N/A"),
                 "Normalized Value": item.get("value_normalized", "N/A"),
-                "Confidence": f"{item.get('confidence', 0)*100:.1f}%" if item.get('confidence') else "N/A"
+                "Confidence": f"{item.get('confidence', 0)*100:.1f}%" if item.get('confidence') else "N/A",
+                "Page & Coordinates": coord_str
             })
         
         key_df = pd.DataFrame(key_data)
